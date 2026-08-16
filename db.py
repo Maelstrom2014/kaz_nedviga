@@ -324,6 +324,12 @@ def check_prices() -> list[dict]:
             # BaseParser.fetch: randomized anti-bot headers, SSL/403 retries,
             # encoding fixes — instead of a bare requests.get.
             html = parser.fetch(url)
+            # OLX returns 200 with "Объявление больше не доступно" for
+            # removed/expired listings. Early-exit before parsing so the
+            # favorite is marked unavailable immediately and clearly.
+            if source == "olx.kz" and "больше не доступно" in html.lower():
+                updated.append(_entry(fav, None, False, "объявление больше не доступно"))
+                continue
             results = parser.parse(html, SearchParams())
             fav_base = url.split("?")[0].rstrip("/")
             listing = None

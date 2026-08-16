@@ -293,3 +293,44 @@ class TestApiCheckPrices:
         resp = client.post("/api/favorites/check-prices")
         assert resp.status_code == 200
         assert resp.get_json()["checked"] == 0
+
+    def test_check_prices_olx_unavailable(self, client):
+        """OLX listing showing 'Объявление больше не доступно' is marked
+        unavailable without attempting to parse the page."""
+        from db import check_prices
+        from parsers.olx import OlxParser
+
+        fav = {
+            **SAMPLE,
+            "url": "https://www.olx.kz/d/obyavlenie/deleted-ad/",
+            "source": "olx.kz",
+        }
+        db.add_favorite(fav)
+        parser = OlxParser()
+        with patch.object(parser, "fetch",
+                          return_value="<html>Объявление больше не доступно</html>"):
+            with patch("parsers.factory.get_all_parsers", return_value=[parser]):
+                results = check_prices()
+        assert len(results) == 1
+        r = results[0]
+        assert r["error"] == "объявление больше не доступно"
+        assert r["new_price"] is None
+        assert r["changed"] is False
+
+    def test_check_prices_olx_unavailable_not_parsed(self, client):
+        """When OLX returns the 'недоступно' page, parse() must NOT be called."""
+        from db import check_prices
+        from parsers.olx import OlxParser
+
+        db.add_favorite({
+            **SAMPLE,
+            "url": "https://www.olx.kz/d/obyavlenie/deleted-ad/",
+            "source": "olx.kz",
+        })
+        parser = OlxParser()
+        with patch.object(parser, "fetch",
+                          return_value="<html>Объявление больше не доступно</html>"):
+            with patch.object(parser, "parse") as mock_parse, \
+                 patch("parsers.factory.get_all_parsers", return_value=[parser]):
+                check_prices()
+        mock_parse.assert_not_called()
