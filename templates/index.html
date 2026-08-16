@@ -1,0 +1,2268 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Поиск аренды жилья в Алматы</title>
+  <script>
+    // Apply saved theme before paint to avoid flicker.
+    // Rendered server-side from data/settings.json; localStorage is a fallback.
+    (function () {
+      var t = "{{ theme }}";
+      try { if (!t) t = localStorage.getItem('theme') || ''; } catch (e) {}
+      if (!t) t = 'midnight';
+      try { localStorage.setItem('theme', t); } catch (e) {}
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
+  <style>
+  :root {
+   --bg: #0f172a;
+   --card: #1e293b;
+   --card-2: #334155;
+   --accent: #3b82f6;
+   --accent-2: #8b5cf6;
+   --text: #f1f5f9;
+   --text-dim: #94a3b8;
+   --border: #475569;
+   --success: #22c55e;
+   --warning: #f59e0b;
+   --danger: #ef4444;
+   --radius: 12px;
+}
+  .rates-bar {
+   display: flex; align-items: center; gap: 4px; margin-top: 8px; flex-wrap: wrap;
+   font-size: .78rem; color: var(--text-dim);
+   background: rgba(255,255,255,.05); padding: 4px 10px; border-radius: 8px;
+   border: 1px solid var(--border); width: fit-content;
+}
+  .rates-item b { color: var(--accent); font-weight: 700; }
+  .rates-divider { opacity: .4; margin: 0 2px; }
+  .rates-updated { font-size: .7rem; opacity: .7; }
+  .rates-refresh {
+   background: none; border: 1px solid var(--border); color: var(--text-dim);
+   border-radius: 4px; cursor: pointer; font-size: .9rem; padding: 0 6px;
+   line-height: 1.4; transition: .2s;
+}
+  .rates-refresh:hover { border-color: var(--accent); color: var(--accent); }
+  .rates-refresh:disabled { opacity: .5; cursor: wait; }
+  /* === Dark themes === */
+  [data-theme="carbon"] {
+   --bg: #18181b; --card: #27272a; --card-2: #3f3f46;
+   --accent: #2dd4bf; --accent-2: #06b6d4;
+   --text: #fafafa; --text-dim: #a1a1aa; --border: #52525b;
+}
+  [data-theme="forest"] {
+   --bg: #0c1410; --card: #16241c; --card-2: #1f3327;
+   --accent: #4ade80; --accent-2: #a3e635;
+   --text: #ecfdf5; --text-dim: #86efac; --border: #2f4a3a;
+}
+  /* === Light themes === */
+  [data-theme="daylight"] {
+   --bg: #f1f5f9; --card: #ffffff; --card-2: #e2e8f0;
+   --accent: #2563eb; --accent-2: #7c3aed;
+   --text: #0f172a; --text-dim: #64748b; --border: #cbd5e1;
+   --success: #16a34a; --warning: #d97706; --danger: #dc2626;
+}
+  [data-theme="sand"] {
+   --bg: #faf6ec; --card: #fffdf6; --card-2: #efe5d2;
+   --accent: #c2820a; --accent-2: #9a6b0d;
+   --text: #422006; --text-dim: #92600f; --border: #ddc9a6;
+   --success: #16a34a; --warning: #d97706; --danger: #dc2626;
+}
+  [data-theme="rose"] {
+   --bg: #fdf2f8; --card: #ffffff; --card-2: #fce7f3;
+   --accent: #db2777; --accent-2: #9333ea;
+   --text: #831843; --text-dim: #be185d; --border: #f9a8d4;
+   --success: #16a34a; --warning: #d97706; --danger: #dc2626;
+}
+  [data-theme="midnight"] {
+   --bg: #0f172a; --card: #1e293b; --card-2: #334155;
+   --accent: #3b82f6; --accent-2: #8b5cf6;
+   --text: #f1f5f9; --text-dim: #94a3b8; --border: #475569;
+}
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    /* Header */
+    header {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      border-bottom: 1px solid var(--border);
+      padding: 20px 24px;
+      position: sticky; top: 0; z-index: 1000;
+      backdrop-filter: blur(10px);
+    }
+    header h1 {
+      font-size: 1.5rem;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    header p { color: var(--text-dim); font-size: .85rem; margin-top: 4px; }
+    /* Layout */
+    .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
+    .grid-layout { display: grid; grid-template-columns: 340px 1fr; gap: 20px; }
+    @media (max-width: 900px) { .grid-layout { grid-template-columns: 1fr; } }
+    /* Search panel */
+    .search-panel {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 16px;
+      border: 1px solid var(--border);
+      position: sticky; top: 80px;
+      max-height: calc(100vh - 100px);
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    .search-panel::-webkit-scrollbar { width: 5px; }
+    .search-panel::-webkit-scrollbar-track { background: var(--card-2); border-radius: 3px; }
+    .search-panel::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
+    .search-panel h2 { font-size: 1.1rem; margin-bottom: 16px; }
+    .form-group { margin-bottom: 10px; }
+    .form-group label { display: block; font-size: .8rem; color: var(--text-dim); margin-bottom: 4px; font-weight: 600; }
+    .form-group input, .form-group select, .form-group textarea {
+      width: 100%; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--card-2);
+      color: var(--text); font-size: .9rem; outline: none;
+      transition: border-color .2s;
+    }
+    .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+    .form-row { display: flex; gap: 8px; }
+    .form-row .form-group { flex: 1; }
+    .checkbox-group { display: flex; flex-wrap: wrap; gap: 6px; }
+    .checkbox-group label {
+      display: flex; align-items: center; gap: 4px;
+      background: var(--card-2); border: 1px solid var(--border);
+      padding: 4px 10px; border-radius: 6px; cursor: pointer;
+      font-size: .85rem; color: var(--text); transition: .2s;
+    }
+    .checkbox-group input { width: auto; }
+    .checkbox-group label:has(input:checked) { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .sources-group { max-height: 140px; overflow-y: auto; }
+    .sources-group label { width: 100%; }
+    .btn-search {
+      width: 100%; padding: 12px; border-radius: 8px; border: none;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff; font-size: 1rem; font-weight: 700; cursor: pointer;
+      transition: transform .1s, opacity .2s; margin-top: 8px;
+    }
+    .btn-search:hover { opacity: .9; }
+    .btn-search:active { transform: scale(.98); }
+    .btn-search:disabled { opacity: .5; cursor: wait; }
+    /* Main content */
+    .main-content { display: flex; flex-direction: column; gap: 20px; }
+    /* Map section */
+    .map-section {
+      background: var(--card); border-radius: var(--radius);
+      border: 1px solid var(--border); overflow: hidden;
+    }
+    .map-header {
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .map-header h2 { font-size: 1.1rem; }
+    .heatmap-controls {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .heatmap-controls select {
+      padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--card-2); color: var(--text); font-size: .85rem; cursor: pointer;
+    }
+    .heat-toggle {
+      padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--card-2); color: var(--text-dim); font-size: .8rem; cursor: pointer;
+      font-weight: 600; transition: .2s;
+    }
+    .heat-toggle.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    #map { height: 500px; width: 100%; }
+    .map-legend {
+      padding: 12px 20px; background: var(--card);
+      border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .legend-bar {
+      flex: 1; height: 20px; border-radius: 4px; min-width: 200px;
+      background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
+    }
+    .legend-labels { display: flex; justify-content: space-between; font-size: .75rem; color: var(--text-dim); width: 100%; }
+    /* Results */
+    .results-header {
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .results-header h2 { font-size: 1.1rem; }
+    .export-buttons { display: flex; gap: 8px; }
+    .btn-export {
+      padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--card-2); color: var(--text); font-size: .85rem;
+      cursor: pointer; font-weight: 600; transition: .2s;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .btn-export:hover { border-color: var(--accent); }
+    .results-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+      gap: 16px;
+    }
+    .listing-card {
+      background: var(--card); border-radius: var(--radius);
+      border: 1px solid var(--border); overflow: hidden;
+      transition: transform .15s, box-shadow .15s;
+    }
+    .listing-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.3); border-color: var(--accent); }
+    .listing-card.active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 8px 24px rgba(0,0,0,.3); }
+    .listing-img {
+      width: 100%; height: 200px; object-fit: contain;
+      background: var(--card-2);
+    }
+    .photo-carousel {
+      position: relative; width: 100%; height: 200px;
+      background: var(--card-2); overflow: hidden;
+    }
+    .photo-carousel-track {
+      display: flex; width: 100%; height: 100%;
+      transition: transform 0.3s ease;
+    }
+    .photo-carousel-track img {
+      min-width: 100%; height: 200px; object-fit: contain;
+      flex-shrink: 0;
+    }
+    .photo-nav {
+      position: absolute; top: 50%; transform: translateY(-50%);
+      width: 32px; height: 32px; border-radius: 50%;
+      border: none; background: rgba(15,23,42,.7); color: #fff;
+      font-size: 1.1rem; cursor: pointer; z-index: 6;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; transition: opacity .2s;
+    }
+    .photo-carousel:hover .photo-nav { opacity: 1; }
+    .photo-nav.prev { left: 6px; }
+    .photo-nav.next { right: 6px; }
+    .photo-nav:hover { background: var(--accent); }
+    .photo-counter {
+      position: absolute; bottom: 6px; right: 6px;
+      background: rgba(15,23,42,.8); color: #fff;
+      font-size: .7rem; padding: 2px 8px; border-radius: 4px;
+      z-index: 6;
+    }
+    .badge-new {
+      position: absolute; top: 10px; left: 10px;
+      background: var(--success); color: #fff;
+      font-size: .7rem; font-weight: 700; padding: 2px 8px;
+      border-radius: 4px; z-index: 6;
+    }
+    .badge-price-change {
+      position: absolute; top: 48px; left: 10px;
+      background: var(--warning); color: #fff;
+      font-size: .65rem; font-weight: 700; padding: 2px 8px;
+      border-radius: 4px; z-index: 6;
+    }
+    .listing-body { padding: 14px; }
+    .listing-title {
+      font-size: .95rem; font-weight: 600; margin-bottom: 6px;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .listing-price { font-size: 1.2rem; font-weight: 800; color: var(--accent); margin-bottom: 8px; }
+    .listing-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: .8rem; color: var(--text-dim); }
+    .listing-meta span { background: var(--card-2); padding: 2px 8px; border-radius: 4px; }
+    .listing-source {
+      display: inline-block; font-size: .7rem; padding: 2px 8px;
+      border-radius: 4px; background: var(--accent-2); color: #fff; margin-top: 8px;
+    }
+    .listing-link {
+      display: inline-block; margin-top: 8px; color: var(--accent);
+      text-decoration: none; font-size: .85rem; font-weight: 600;
+    }
+    .listing-link:hover { text-decoration: underline; }
+    /* Loading */
+    .loading-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(15,23,42,.8); display: none;
+      align-items: center; justify-content: center; z-index: 2000;
+    }
+    .loading-overlay.active { display: flex; }
+    .spinner {
+      width: 48px; height: 48px; border: 4px solid var(--card-2);
+      border-top-color: var(--accent); border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Empty state */
+    .empty-state {
+      text-align: center; padding: 60px 20px; color: var(--text-dim);
+    }
+    /* District tooltip */
+    .district-popup { font-size: .9rem; }
+    .district-popup h3 { margin-bottom: 6px; color: var(--accent); }
+    .district-popup .stat { display: flex; justify-content: space-between; margin: 4px 0; }
+    /* Sites tags */
+    .site-tag { font-size: .7rem; color: var(--text-dim); }
+    /* Tab switcher */
+    .tab-switcher { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 20px; }
+    .tab-btn {
+      padding: 10px 24px; background: none; border: none; color: var(--text-dim);
+      font-size: 1rem; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent;
+      margin-bottom: -2px; transition: .2s;
+    }
+    .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+    .tab-btn:hover { color: var(--text); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    /* Favorite button on cards */
+    .btn-fav {
+      position: absolute; top: 10px; right: 10px;
+      width: 38px; height: 38px; border-radius: 50%;
+      border: none; background: rgba(15,23,42,.8); color: var(--text-dim);
+      font-size: 1.2rem; cursor: pointer; transition: .2s;
+      display: flex; align-items: center; justify-content: center;
+      backdrop-filter: blur(4px); z-index: 5;
+    }
+    .btn-fav:hover { background: var(--accent); color: #fff; }
+    .btn-fav.saved { background: var(--warning); color: #fff; }
+    .listing-card { position: relative; }
+    /* Favorites panel */
+    .favorites-section {
+      background: var(--card); border-radius: var(--radius);
+      border: 1px solid var(--border); overflow: hidden;
+    }
+    .favorites-header {
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 12px;
+    }
+    .favorites-header h2 { font-size: 1.1rem; }
+    .btn-check-prices {
+      padding: 8px 16px; border-radius: 8px; border: 1px solid var(--success);
+      background: var(--success); color: #fff; font-size: .85rem;
+      font-weight: 600; cursor: pointer; transition: .2s;
+    }
+  .btn-check-prices:hover { opacity: .85; }
+  .btn-check-prices:disabled { opacity: .5; cursor: wait; }
+  .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+  .theme-swatch {
+   display: flex; flex-direction: column; align-items: center; gap: 8px;
+   padding: 10px; border-radius: var(--radius); cursor: pointer;
+   background: var(--card-2); border: 2px solid var(--border); color: var(--text);
+   font-size: .85rem; font-weight: 600; transition: .2s;
+}
+  .theme-swatch:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .theme-swatch.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .theme-preview { width: 100%; height: 52px; border-radius: 8px; border: 1px solid var(--border); }
+  .btn-danger {
+   padding: 10px 16px; border-radius: 8px; border: 1px solid var(--danger);
+   background: var(--danger); color: #fff; font-size: .85rem;
+   font-weight: 600; cursor: pointer; transition: .2s;
+}
+  .btn-danger:hover { opacity: .85; }
+  .btn-danger:disabled { opacity: .5; cursor: wait; }
+  .parser-card {
+   background: var(--card-2); border-radius: 10px; padding: 14px;
+   border: 1px solid var(--border); transition: .15s;
+}
+  .parser-card:hover { border-color: var(--accent); }
+  .parser-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .parser-name { font-size: .9rem; font-weight: 700; }
+  .parser-url { font-size: .72rem; color: var(--text-dim); margin-top: 2px; word-break: break-all; }
+  .status-badge {
+   font-size: .68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;
+}
+  .status-ok, .status-badge.ok { background: rgba(34,197,94,.2); color: var(--success); }
+  .status-empty { background: rgba(148,163,184,.2); color: var(--text-dim); }
+  .status-http_error, .status-ssl_error, .status-connection_error, .status-timeout, .status-error { background: rgba(239,68,68,.2); color: var(--danger); }
+  .parser-metrics { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .parser-metric { font-size: .72rem; background: var(--card); padding: 2px 8px; border-radius: 4px; color: var(--text-dim); }
+  .parser-metric b { color: var(--text); }
+  .parser-error {
+   font-size: .72rem; color: var(--danger); margin-top: 8px;
+   background: rgba(239,68,68,.08); padding: 6px 8px; border-radius: 6px;
+   word-break: break-word; white-space: pre-wrap; max-height: 80px; overflow-y: auto;
+}
+  .analyzer-summary-card {
+   background: var(--card-2); padding: 10px 16px; border-radius: 8px; border: 1px solid var(--border);
+   text-align: center;
+}
+  .analyzer-summary-card .num { font-size: 1.4rem; font-weight: 800; }
+  .analyzer-summary-card .label { font-size: .72rem; color: var(--text-dim); }
+  .price-per-m2 { font-size: .7rem; color: var(--accent-2); font-weight: 600; }
+  .price-conv { font-size: .8rem; color: var(--text-dim); font-weight: 600; }
+  .desc-preview { font-size: .75rem; color: var(--text-dim); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card-meta-grid { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .card-chip { font-size: .68rem; padding: 1px 7px; border-radius: 4px; background: var(--card-2); color: var(--text-dim); white-space: nowrap; }
+  .card-chip b { color: var(--text); }
+    .fav-card {
+      background: var(--card-2); border-radius: 10px;
+      padding: 14px; border: 1px solid var(--border);
+      display: flex; gap: 12px; transition: .15s;
+    }
+    .fav-card:hover { border-color: var(--accent); }
+    .fav-card.unavailable { opacity: .55; border-color: var(--danger); border-style: dashed; }
+    .fav-badge-unavailable { display: inline-block; background: var(--danger); color: #fff; font-size: .68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 8px; vertical-align: middle; }
+    .fav-card-img { width: 100px; height: 80px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--card); }
+    .fav-card-body { flex: 1; min-width: 0; }
+    .fav-card-title { font-size: .9rem; font-weight: 600; margin-bottom: 4px; }
+    .fav-card-price { font-size: 1.1rem; font-weight: 800; color: var(--accent); }
+    .fav-card-meta { font-size: .75rem; color: var(--text-dim); margin-top: 4px; }
+    /* Stars */
+    .stars { display: inline-flex; gap: 2px; cursor: pointer; }
+    .star { font-size: 1.2rem; color: var(--border); cursor: pointer; transition: .1s; user-select: none; }
+    .star.active { color: var(--warning); }
+    .star:hover { color: var(--accent); }
+    /* Price change badge */
+    .price-change {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: .75rem; padding: 2px 8px; border-radius: 4px;
+      font-weight: 600;
+    }
+    .price-change.up { background: rgba(239,68,68,.2); color: var(--danger); }
+    .price-change.down { background: rgba(34,197,94,.2); color: var(--success); }
+    .price-change.stable { background: rgba(148,163,184,.2); color: var(--text-dim); }
+    /* Comment input */
+    .comment-box {
+      width: 100%; padding: 6px 8px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--card);
+      color: var(--text); font-size: .8rem; outline: none;
+      margin-top: 6px; resize: vertical; min-height: 32px;
+    }
+    .comment-box:focus { border-color: var(--accent); }
+    .btn-del-fav {
+      padding: 4px 10px; border-radius: 6px; border: 1px solid var(--danger);
+      background: transparent; color: var(--danger); font-size: .75rem;
+      cursor: pointer; font-weight: 600; transition: .2s;
+    }
+    .btn-del-fav:hover { background: var(--danger); color: #fff; }
+    .btn-show-chart {
+      padding: 4px 10px; border-radius: 6px; border: 1px solid var(--accent);
+      background: transparent; color: var(--accent); font-size: .75rem;
+      cursor: pointer; font-weight: 600; transition: .2s;
+    }
+    .btn-show-chart:hover { background: var(--accent); color: #fff; }
+    /* Chart modal */
+    .chart-modal {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(15,23,42,.85); z-index: 3000;
+      align-items: center; justify-content: center;
+    }
+    .chart-modal.active { display: flex; }
+    .chart-modal-content {
+      background: var(--card); border-radius: var(--radius);
+      padding: 24px; width: 90%; max-width: 700px;
+      border: 1px solid var(--border);
+    }
+    .chart-modal-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px;
+    }
+    .chart-modal-close {
+      width: 36px; height: 36px; border-radius: 50%; border: none;
+      background: var(--card-2); color: var(--text); font-size: 1.3rem;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    .chart-modal-close:hover { background: var(--danger); }
+    #priceChart { width: 100% !important; max-height: 350px; }
+    .fav-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; align-items: center; }
+    .fav-info-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ДомАлматы — Поиск аренды жилья</h1>
+    <p>{{ sites|length }} сайтов недвижимости Алматы в одном поиске с интерактивной тепловой картой цен</p>
+  </header>
+
+  <div class="container">
+    <div class="grid-layout">
+      <!-- Search Panel -->
+      <aside class="search-panel">
+        <form id="searchForm" autocomplete="off">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+            <strong style="font-size:.95rem;">Фильтры поиска</strong>
+            <button type="button" class="btn-export" id="resetFiltersBtn" style="font-size:.76rem;padding:4px 10px;">Сбросить</button>
+          </div>
+          <div class="form-group">
+            <label>Текстовый запрос</label>
+            <input type="text" name="query" placeholder="напр. 2-комнатная">
+          </div>
+          <div class="form-group">
+            <label>Количество комнат</label>
+            <div class="checkbox-group">
+              <label><input type="checkbox" name="rooms" value="0"> Студия</label>
+              <label><input type="checkbox" name="rooms" value="1"> 1</label>
+              <label><input type="checkbox" name="rooms" value="2"> 2</label>
+              <label><input type="checkbox" name="rooms" value="3"> 3</label>
+              <label><input type="checkbox" name="rooms" value="4"> 4+</label>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Цена от (тг)</label>
+              <input type="number" name="price_min" placeholder="50000">
+            </div>
+            <div class="form-group">
+              <label>Цена до (тг)</label>
+              <input type="number" name="price_max" placeholder="300000">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Район</label>
+            <select name="district">
+              <option value="">— Все районы —</option>
+              {% for d in districts %}
+                <option value="{{ d }}">{{ d }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Этаж от</label>
+              <input type="number" name="floor_min">
+            </div>
+            <div class="form-group">
+              <label>до</label>
+              <input type="number" name="floor_max">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Площадь от (м²)</label>
+              <input type="number" name="area_min">
+            </div>
+            <div class="form-group">
+              <label>до</label>
+              <input type="number" name="area_max">
+            </div>
+          </div>
+        </form>
+      </aside>
+
+      <!-- Main content: Map + Results -->
+      <div class="main-content">
+        <!-- Tab switcher -->
+        <div class="tab-switcher">
+          <button class="tab-btn active" id="tabSearch" onclick="switchTab('search')">Поиск и карта</button>
+          <button class="tab-btn" id="tabFav" onclick="switchTab('favorites')">Избранное и мониторинг <span id="favCount" style="background:var(--accent);color:#fff;border-radius:10px;padding:1px 7px;font-size:.75rem;">0</span></button>
+          <button class="tab-btn" id="tabAnalyzer" onclick="switchTab('analyzer')">Анализатор <span id="analyzerBadge" style="background:var(--danger);color:#fff;border-radius:10px;padding:1px 7px;font-size:.75rem;display:none;">0</span></button>
+          <button class="tab-btn" id="tabSettings" onclick="switchTab('settings')">Настройки</button>
+        </div>
+
+        <!-- Tab: Search -->
+        <div class="tab-content active" id="searchTab">
+        <!-- Map with heatmap -->
+        <div class="map-section">
+          <div class="map-header">
+            <h2>Карта Алматы — районы и тепловая карта цен</h2>
+            <div class="heatmap-controls">
+              <select id="propertyType" title="Тип недвижимости для тепловой карты">
+                <option value="all">Все типы</option>
+                <option value="studio">Студии</option>
+                <option value="1">1-комнатные</option>
+                <option value="2">2-комнатные</option>
+                <option value="apartment">Апартаменты</option>
+              </select>
+              <button class="heat-toggle active" id="heatToggle">Тепловая карта</button>
+              <button class="heat-toggle" id="districtsToggle">Районы</button>
+              <button class="heat-toggle" id="favoritesOnlyToggle">Только избранное</button>
+            </div>
+          </div>
+          <div id="map"></div>
+          <div class="map-legend">
+            <span style="font-size:.8rem;color:var(--text-dim);white-space:nowrap;">Низкие</span>
+            <div class="legend-bar"></div>
+            <span style="font-size:.8rem;color:var(--text-dim);white-space:nowrap;">Высокие цены</span>
+          </div>
+        </div>
+
+        <!-- Results -->
+        <div>
+          <div class="results-header">
+            <h2 id="resultsTitle">Результаты: 0 объявлений</h2>
+            <div class="export-buttons" id="exportButtons" style="display:none;">
+              <button class="btn-export" id="clearResultsBtn" onclick="clearResults()" style="border-color:var(--danger);color:var(--danger);">Очистить кэш</button>
+              <button class="btn-export" id="exportTxt">TXT</button>
+              <button class="btn-export" id="exportPdfPortrait">PDF верт.</button>
+              <button class="btn-export" id="exportPdfLandscape">PDF горизонт.</button>
+            </div>
+          </div>
+          <div class="results-grid" id="resultsGrid">
+            <div class="empty-state">Нет данных. Запустите парсинг на вкладке «Анализатор» — фильтры слева сузят результат в реальном времени.</div>
+          </div>
+        </div>
+        </div><!-- /searchTab -->
+
+        <!-- Tab: Favorites -->
+        <div class="tab-content" id="favTab">
+          <div class="favorites-section">
+            <div class="favorites-header">
+              <h2>Избранные квартиры — оценки, комментарии и мониторинг цен</h2>
+              <button class="btn-check-prices" id="checkPricesBtn">Проверить цены</button>
+            </div>
+            <div class="export-buttons" id="favExportButtons" style="display:none;padding:12px 20px;0;">
+              <button class="btn-export" id="favExportTxt">TXT</button>
+              <button class="btn-export" id="favExportPdfPortrait">PDF верт.</button>
+              <button class="btn-export" id="favExportPdfLandscape">PDF горизонт.</button>
+            </div>
+            <div style="padding: 16px 20px;" id="favoritesList">
+              <div class="empty-state">Нет сохранённых вариантов. Нажмите на звёздочку на карточке объявления.</div>
+            </div>
+          </div>
+        </div><!-- /favTab -->
+
+        <!-- Tab: Settings -->
+        <div class="tab-content" id="settingsTab">
+          <div class="favorites-section">
+            <div class="favorites-header">
+              <h2>Настройки</h2>
+            </div>
+            <div style="padding: 16px 20px;">
+              <h3 style="font-size:1rem;margin-bottom:12px;">Параметры поиска по умолчанию</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Эти значения подставляются в форму поиска при загрузке страницы. Сохраняются на сервере.</p>
+              <div id="defaultsForm" style="display:grid;gap:12px;">
+                <div class="form-group">
+                  <label>Количество комнат (по умолчанию)</label>
+                  <div class="checkbox-group" id="defaultsRooms">
+                    <label><input type="checkbox" id="def-rooms-0" value="0"> Студия</label>
+                    <label><input type="checkbox" id="def-rooms-1" value="1"> 1</label>
+                    <label><input type="checkbox" id="def-rooms-2" value="2"> 2</label>
+                    <label><input type="checkbox" id="def-rooms-3" value="3"> 3</label>
+                    <label><input type="checkbox" id="def-rooms-4" value="4"> 4+</label>
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>Цена от (тг)</label>
+                    <input type="number" id="def-price_min" placeholder="100000">
+                  </div>
+                  <div class="form-group">
+                    <label>Цена до (тг)</label>
+                    <input type="number" id="def-price_max" placeholder="300000">
+                  </div>
+                </div>
+                <div class="form-group">
+                  <label>Район (по умолчанию)</label>
+                  <select id="def-district">
+                    <option value="">— Все районы —</option>
+                    {% for d in districts %}
+                      <option value="{{ d }}">{{ d }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>Этаж от</label>
+                    <input type="number" id="def-floor_min">
+                  </div>
+                  <div class="form-group">
+                    <label>до</label>
+                    <input type="number" id="def-floor_max">
+                  </div>
+                </div>
+                <div class="form-row">
+                  <div class="form-group">
+                    <label>Площадь от (м²)</label>
+                    <input type="number" id="def-area_min">
+                  </div>
+                  <div class="form-group">
+                    <label>до</label>
+                    <input type="number" id="def-area_max">
+                  </div>
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                  <button class="btn-export" id="saveDefaultsBtn" onclick="saveSearchDefaults()">Сохранить параметры</button>
+                  <button class="btn-export" id="applyDefaultsBtn" onclick="applyDefaultsToForm()">Применить к форме</button>
+                  <button class="btn-export" onclick="resetSearchDefaults()"> Сбросить</button>
+                </div>
+              </div>
+
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Показ результатов</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Фильтр применяется к результатам поиска и карте. Объявления без фото при этом в кэше сохраняются — выключите фильтр, и они снова появятся.</p>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.9rem;">
+                <input type="checkbox" id="hideNoPhoto" onchange="setHideNoPhoto(this.checked)" style="width:16px;height:16px;cursor:pointer;">
+                Убирать все объявления без фото
+              </label>
+
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Курс валют</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Курсы обновляются автоматически (каждые 10 минут) и при поиске. Применяются к ценам в карточках и избранном.</p>
+              <div class="rates-bar" id="ratesBar" style="flex-wrap:wrap;justify-content:flex-start;padding:10px 14px;margin-bottom:8px;">
+                <span class="rates-item">1 ₸ = <b id="rateRub">—</b> ₽</span>
+                <span class="rates-divider">|</span>
+                <span class="rates-item">1 ₸ = <b id="rateUsd">—</b> $</span>
+                <span class="rates-divider">|</span>
+                <span class="rates-updated" id="rateUpdated">загрузка…</span>
+                <button class="rates-refresh" id="ratesRefreshBtn" onclick="refreshRates()" title="Обновить курс">↻</button>
+              </div>
+
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Кэш картинок</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Фотографии с детальных страниц сохраняются на диск для быстрого экспорта. При превышении лимита старые файлы удаляются автоматически.</p>
+              <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                <div class="form-group" style="margin-bottom:0;">
+                  <label>Максимальный размер кэша (МБ)</label>
+                  <input type="number" id="photoCacheMbInput" min="50" max="10000" step="50" style="width:110px;"
+                         onchange="setPhotoCacheMb(this.value)">
+                </div>
+                <button class="btn-export" onclick="clearPhotoCache()" style="border-color:var(--danger);color:var(--danger);">Очистить кэш</button>
+              </div>
+              <div id="photoCacheInfo" style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;"></div>
+
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Страницы по сайтам</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Сколько страниц поиска парсить с каждого сайта. Сохраняется на сервере. Поле «страниц на сайт» в форме поиска задаёт единое число для всех — здесь можно настроить каждый сайт отдельно.</p>
+              <div id="parserMaxPagesGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;"></div>
+
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Цветовая тема</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Тема сохраняется на сервере и применяется при следующем запуске.</p>
+              <div class="theme-grid" id="themeGrid">
+                <button class="theme-swatch" data-theme="midnight" onclick="setTheme('midnight')">
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#0f172a,#3b82f6);"></span>
+                  <span>Полночь</span>
+                </button>
+                <button class="theme-swatch" data-theme="carbon" onclick="setTheme('carbon')">
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#18181b,#2dd4bf);"></span>
+                  <span>Карбон</span>
+                </button>
+                <button class="theme-swatch" data-theme="forest" onclick="setTheme('forest')">
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#0c1410,#4ade80);"></span>
+                  <span>Лес</span>
+                </button>
+                <button class="theme-swatch" data-theme="daylight" onclick="setTheme('daylight')">
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#f1f5f9,#2563eb);"></span>
+                  <span>Дневной</span>
+                </button>
+                <button class="theme-swatch" data-theme="sand" onclick="setTheme('sand')">
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#faf6ec,#c2820a);"></span>
+                  <span>Песок</span>
+                </button>
+                <button class="theme-swatch" data-theme="rose" onclick="setTheme('rose')">
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#fdf2f8,#db2777);"></span>
+                  <span>Роза</span>
+                </button>
+              </div>
+
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Управление данными</h3>
+              <div style="display:flex;flex-wrap:wrap;gap:12px;">
+                <button class="btn-danger" id="clearFavBtn" onclick="clearFavorites()">Удалить всё избранное</button>
+                <button class="btn-danger" id="resetDbBtn" onclick="resetDatabase()">Удалить всю базу</button>
+              </div>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-top:10px;">Удаление базы очищает избранное, историю цен и пересоздаёт файл базы данных.</p>
+            </div>
+          </div>
+        </div><!-- /settingsTab -->
+
+        <!-- Tab: Parser Analyzer -->
+        <div class="tab-content" id="analyzerTab">
+          <div class="favorites-section">
+            <div class="favorites-header">
+              <h2>Анализатор парсеров</h2>
+              <button class="btn-export" id="refreshAnalyzerBtn" onclick="loadParserStats()">Обновить</button>
+            </div>
+            <div style="padding: 16px 20px;">
+              <div class="crawl-controls" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:18px;">
+                <h3 style="font-size:.95rem;margin:0 0 10px;">Запуск парсинга</h3>
+                <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 12px;">Сборщик обходит выбранные сайты и наполняет кэш объявлений. Фильтры (комнаты, цена, район и т.д.) применяются к собранным данным в реальном времени на вкладке «Поиск и карта».</p>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+                  <div class="form-group" style="margin:0;">
+                    <label>Страниц на каждый сайт (1–10)</label>
+                    <input type="number" id="maxPagesInput" name="max_pages" min="1" max="10" placeholder="по умолчанию" style="width:150px;">
+                    <small style="opacity:.65;display:block;margin-top:4px;">Пусто — стандартное число</small>
+                  </div>
+                  <button type="button" class="btn-search" id="crawlBtn" style="margin:0;">Поиск</button>
+                </div>
+                <div class="form-group" style="margin:0;">
+                  <label>Источники ({{ sites|length }})</label>
+                  <div class="checkbox-group sources-group" id="sourcesGroup">
+                    {% for s in sites %}
+                      <label><input type="checkbox" name="sources" value="{{ s.name }}" checked> {{ s.name }}</label>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
+              <div id="analyzerSummary" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;"></div>
+              <div id="analyzerGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:12px;">
+                <div class="empty-state">Запустите поиск — здесь появится детальная статистика по каждому парсеру.</div>
+              </div>
+            </div>
+          </div>
+        </div><!-- /analyzerTab -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Chart modal -->
+  <div class="chart-modal" id="chartModal">
+    <div class="chart-modal-content">
+      <div class="chart-modal-header">
+        <h3 id="chartTitle" style="font-size:1rem;">Динамика цен</h3>
+        <button class="chart-modal-close" onclick="closeChart()">&times;</button>
+      </div>
+      <canvas id="priceChart"></canvas>
+      <div id="chartSummary" style="margin-top:12px;font-size:.85rem;color:var(--text-dim);"></div>
+    </div>
+  </div>
+
+  <div class="loading-overlay" id="loading">
+    <div style="text-align:center;">
+      <div class="spinner"></div>
+      <p style="margin-top:16px;color:var(--text-dim);">Парсинг сайтов...</p>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    // === Map init ===
+    const map = L.map('map').setView([43.2567, 76.9286], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap', maxZoom: 18
+    }).addTo(map);
+
+    let heatLayer = null;
+    let districtLayers = [];  // polygons + markers
+    let listingMarkers = null;  // MarkerClusterGroup for listings
+    let listingMarkerRefs = [];  // marker objects keyed by index
+    let activeCardIdx = null;  // currently highlighted card
+    let districtsVisible = true;
+    let heatVisible = true;
+    let favoritesOnlyMode = false;  // when true, map shows only favorite markers
+    let districtsData = [];
+    let currentResults = [];
+    let displayedResults = [];  // filtered subset shown in the grid + map
+
+    // === Load districts ===
+    async function loadDistricts() {
+      const resp = await fetch('/api/districts');
+      districtsData = await resp.json();
+      drawDistricts();
+    }
+
+    function drawDistricts() {
+      districtLayers.forEach(l => map.removeLayer(l));
+      districtLayers = [];
+      if (!districtsVisible) return;
+      districtsData.forEach(d => {
+        const count = countListingsInDistrict(d.name);
+        const polygon = L.polygon(d.polygon, {
+          color: '#3b82f6', weight: 2, opacity: 0.6,
+          fillColor: '#3b82f6', fillOpacity: count > 0 ? 0.15 : 0.05
+        }).addTo(map);
+        polygon.bindPopup(`
+          <div class="district-popup">
+            <h3>${d.name}</h3>
+            <p>${d.description || ''}</p>
+            <div class="stat"><span>Найдено квартир:</span><b>${count}</b></div>
+          </div>
+        `);
+        const label = L.marker([d.lat, d.lon], {
+          icon: L.divIcon({
+            className: 'district-label',
+            html: `<div style="background:rgba(15,23,42,.85);color:#f1f5f9;padding:4px 8px;border-radius:6px;font-size:.75rem;white-space:nowrap;text-align:center;border:1px solid #3b82f6;">
+              <b>${d.name}</b>${count > 0 ? `<br><span style="color:#22c55e;font-weight:700;">квартир: ${count}</span>` : ''}
+            </div>`,
+            iconSize: [130, 45], iconAnchor: [65, 22]
+          })
+        }).addTo(map);
+        districtLayers.push(polygon, label);
+      });
+    }
+
+    function countListingsInDistrict(districtName) {
+      if (!displayedResults || !districtName) return 0;
+      // Match the FULL district name with word boundaries so "ул. Ауэзова"
+      // does NOT match "Ауэзовский" (shared root, different word).
+      const escaped = districtName.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp('\\b' + escaped + '\\b');
+      return displayedResults.filter(r => {
+        const hay = ((r.address || '') + ' ' + (r.title || '')).toLowerCase();
+        return re.test(hay);
+      }).length;
+    }
+
+    function drawListingMarkers() {
+      if (listingMarkers) { map.removeLayer(listingMarkers); listingMarkers = null; }
+      listingMarkerRefs = [];
+      if (!displayedResults || !displayedResults.length) return;
+      listingMarkers = L.layerGroup();
+      displayedResults.forEach((r, i) => {
+        const coords = geocodeListing(r, i);
+        if (!coords) return;
+        const priceStr = r.price ? r.price.toLocaleString('ru-RU') + ' ₸' : '—';
+        const photo = r.photo ? r.photo.split('|')[0] : '';
+        const photoHtml = photo ? `<img src="${safeUrl(photo)}" style="width:100%;max-height:110px;object-fit:contain;border-radius:6px;margin-bottom:6px;" onerror="this.style.display='none'">` : '';
+        const altParts = [];
+        if (r.price_rub != null) altParts.push(r.price_rub.toLocaleString('ru-RU') + ' ₽');
+        if (r.price_usd != null) altParts.push('$' + r.price_usd);
+        const altPrice = altParts.join(' · ');
+        const addrLine = [escapeHtml(r.address || ''), r.source].filter(Boolean).join(' · ');
+        // Compact 3-currency label for the marker (thousands abbreviated: 250к ₸ · 48к ₽ · $532)
+        const fmtK = v => v >= 1000 ? Math.round(v / 1000) + 'к' : String(v);
+        let markerLabel = priceStr;
+        if (r.price) {
+          const parts = [fmtK(r.price) + ' ₸'];
+          if (r.price_rub != null) parts.push(fmtK(Math.round(r.price_rub)) + ' ₽');
+          if (r.price_usd != null) parts.push('$' + Math.round(r.price_usd));
+          markerLabel = parts.join(' · ');
+        }
+        const marker = L.marker(coords, {
+          icon: L.divIcon({
+            className: 'listing-marker',
+            html: `<div style="background:var(--accent);color:#fff;padding:2px 7px;border-radius:10px;font-size:.62rem;font-weight:700;white-space:nowrap;box-shadow:0 2px 5px rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.25);">${markerLabel}</div>`,
+            iconSize: [120, 16], iconAnchor: [60, 8]
+          })
+        });
+        marker.bindPopup(`
+          <div style="min-width:190px;max-width:260px;">
+            ${photoHtml}
+            <div style="font-weight:600;font-size:.85rem;margin-bottom:4px;">${escapeHtml(r.title)}</div>
+            <div style="color:#3b82f6;font-weight:800;font-size:1.05rem;">${priceStr}</div>
+            ${altPrice ? `<div style="font-size:.78rem;color:#666;font-weight:600;margin-top:2px;">${altPrice}</div>` : ''}
+            ${addrLine ? `<div style="font-size:.75rem;color:#666;margin-top:4px;">${addrLine}</div>` : ''}
+             <a href="${safeUrl(r.url)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;color:#3b82f6;font-size:.8rem;font-weight:600;text-decoration:none;">Открыть →</a>
+          </div>
+        `);
+        marker._listingIdx = i;
+        marker.addTo(listingMarkers);
+        listingMarkerRefs[i] = marker;
+      });
+      listingMarkers.addTo(map);
+    }
+
+    function focusMarker(idx) {
+      const marker = listingMarkerRefs[idx];
+      if (!marker) return;
+      const ll = marker.getLatLng();
+      map.flyTo([ll.lat, ll.lng], Math.max(map.getZoom(), 15), { duration: .5 });
+      marker.openPopup();
+      // Highlight the card
+      document.querySelectorAll('.listing-card.active').forEach(el => el.classList.remove('active'));
+      const card = document.querySelector(`.listing-card[data-idx="${idx}"]`);
+      if (card) card.classList.add('active');
+      activeCardIdx = idx;
+    }
+
+    function geocodeListing(r, idx) {
+      // Real coordinates from the listing detail page (parser-enriched).
+      if (r.lat != null && r.lon != null) {
+        return [r.lat, r.lon];
+      }
+      // Try to match listing address to a district's center coords
+      const addr = (r.address || '') + ' ' + (r.title || '');
+      for (const d of districtsData) {
+        if (addr.toLowerCase().includes(d.name.toLowerCase())) {
+          // Deterministic offset derived from the URL hash so a marker
+          // doesn't jump between renders (random offsets did before).
+          let h = 0;
+          const s = r.url || (r.title + idx);
+          for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+          const offLat = ((h & 0xff) / 255 - 0.5) * 0.008;
+          const offLon = (((h >>> 8) & 0xff) / 255 - 0.5) * 0.008;
+          return [d.lat + offLat, d.lon + offLon];
+        }
+      }
+      // Fallback: distribute around city center based on index
+      const angle = (idx * 137.5) * Math.PI / 180; // golden angle
+      const radius = 0.02 + (idx % 5) * 0.005;
+      return [43.2567 + Math.sin(angle) * radius, 76.9286 + Math.cos(angle) * radius];
+    }
+
+    // === Heatmap ===
+    // Server-side heatmap re-runs the parsers, so it is expensive. Cache the
+    // response per (property_type, search params) and reuse it on layer
+    // toggles — only a real param change triggers a new request.
+    const heatmapCache = {};
+    function heatmapKey(propertyType, params) {
+      const p = Object.assign({}, params);
+      delete p.property_type;
+      return JSON.stringify({ t: propertyType, p });
+    }
+    async function loadHeatmap(propertyType, force) {
+      // Use current search form params
+      const params = getSearchParams();
+      params.property_type = propertyType;
+      const key = heatmapKey(propertyType, params);
+      if (!force && heatmapCache[key]) {
+        updateHeatmap(heatmapCache[key]);
+        return heatmapCache[key];
+      }
+      const resp = await fetch('/api/heatmap', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(params)
+      });
+      const data = await resp.json();
+      heatmapCache[key] = data;
+      updateHeatmap(data);
+      return data;
+    }
+
+    function updateHeatmap(data) {
+      if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+      // Update district polygons with heat colors
+      districtLayers.forEach(l => map.removeLayer(l));
+      districtLayers = [];
+      data.district_stats.forEach(d => {
+        const intensity = d.intensity;
+        const color = heatColor(intensity, d.avg_price);
+        const polygon = L.polygon(d.polygon, {
+          color: color.border, weight: 2, opacity: 0.8,
+          fillColor: color.fill, fillOpacity: 0.35 + intensity * 0.4
+        });
+        if (districtsVisible) polygon.addTo(map);
+        const avgPriceStr = d.avg_price > 0 ? d.avg_price.toLocaleString('ru-RU') + ' тг' : 'нет данных';
+        // Use the server-side count (d.count) — it's the authoritative
+        // count from the heatmap's own parser run. The client-side
+        // countListingsInDistrict uses currentResults (a different dataset
+        // from /api/search) so it would show 0 before any search and a
+        // different number after — confusing and wrong here.
+        const count = d.count;
+        polygon.bindPopup(`
+          <div class="district-popup">
+            <h3>${d.name}</h3>
+            <p>${d.description || ''}</p>
+            <div class="stat"><span>Средняя цена:</span><b>${avgPriceStr}</b></div>
+            <div class="stat"><span>Объявлений:</span><b style="color:#22c55e;">${count}</b></div>
+          </div>
+        `);
+        const label = L.marker([d.lat, d.lon], {
+          icon: L.divIcon({
+            className: 'district-label',
+            html: `<div style="background:rgba(15,23,42,.85);color:#f1f5f9;padding:4px 8px;border-radius:6px;font-size:.75rem;white-space:nowrap;text-align:center;border:1px solid ${color.border};">
+              <b>${d.name}</b><br><span style="color:${color.text}">${avgPriceStr}</span>
+              ${count > 0 ? `<br><span style="color:#22c55e;font-weight:700;">квартир: ${count}</span>` : ''}
+            </div>`,
+            iconSize: [130, 55], iconAnchor: [65, 27]
+          })
+        });
+        if (districtsVisible) {
+          label.addTo(map);
+          districtLayers.push(polygon, label);
+        } else {
+          districtLayers.push(label);
+        }
+      });
+      // Heat points overlay
+      if (heatVisible && data.heat_points.some(p => p.price > 0)) {
+        const points = data.heat_points
+          .filter(p => p.price > 0)
+          .map(p => [p.lat, p.lon, p.intensity]);
+        heatLayer = L.heatLayer(points, {
+          radius: 60, blur: 35, maxZoom: 13,
+          gradient: {0.0: '#22c55e', 0.5: '#eab308', 1.0: '#ef4444'}
+        }).addTo(map);
+      }
+    }
+
+    function heatColor(intensity, price) {
+      // green -> yellow -> red
+      let r, g, b;
+      if (intensity < 0.5) {
+        const t = intensity * 2;
+        r = Math.round(34 + (234 - 34) * t);
+        g = Math.round(197 + (179 - 197) * t);
+        b = Math.round(94 + (8 - 94) * t);
+      } else {
+        const t = (intensity - 0.5) * 2;
+        r = Math.round(234 + (239 - 234) * t);
+        g = Math.round(179 + (68 - 179) * t);
+        b = Math.round(8 + (68 - 8) * t);
+      }
+      const fill = `rgb(${r},${g},${b})`;
+      const border = `rgb(${Math.min(r+40,255)},${Math.min(g+40,255)},${Math.min(b+40,255)})`;
+      const text = `rgb(${Math.min(r+80,255)},${Math.min(g+80,255)},${Math.min(b+80,255)})`;
+      return {fill, border, text};
+    }
+
+    // === Toggles ===
+    // The toggles only show/hide layers — they must NOT re-run the parsers
+    // (loadHeatmap fetches from the server, which re-parses every site).
+    // Re-parsing on a mere visibility toggle made the buttons feel broken
+    // (long hangs, flicker, lost state). Reuse the cached heatmap data.
+    document.getElementById('heatToggle').addEventListener('click', function() {
+      heatVisible = !heatVisible;
+      this.classList.toggle('active', heatVisible);
+      const key = heatmapKey(document.getElementById('propertyType').value, getSearchParams());
+      const cached = heatmapCache[key];
+      if (cached) updateHeatmap(cached);
+      else if (!heatVisible && heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
+    });
+    document.getElementById('districtsToggle').addEventListener('click', function() {
+      districtsVisible = !districtsVisible;
+      this.classList.toggle('active', districtsVisible);
+      const key = heatmapKey(document.getElementById('propertyType').value, getSearchParams());
+      const cached = heatmapCache[key];
+      if (cached) updateHeatmap(cached);
+      else drawDistricts();
+    });
+    document.getElementById('propertyType').addEventListener('change', function() {
+      loadHeatmap(this.value);
+    });
+    document.getElementById('favoritesOnlyToggle').addEventListener('click', async function() {
+      favoritesOnlyMode = !favoritesOnlyMode;
+      this.classList.toggle('active', favoritesOnlyMode);
+      if (favoritesOnlyMode) {
+        // Load favorites from server and draw their markers on the map
+        await drawFavoritesOnly();
+      } else {
+        // Back to normal search results
+        drawListingMarkers();
+      }
+    });
+
+    async function drawFavoritesOnly() {
+      // Fetch all favorites and draw them as markers on the map
+      try {
+        const resp = await fetch('/api/favorites');
+        const data = await resp.json();
+        const favs = data.favorites || [];
+        // Use favorites as the marker dataset
+        if (listingMarkers) { map.removeLayer(listingMarkers); listingMarkers = null; }
+        listingMarkerRefs = [];
+        if (!favs.length) return;
+        listingMarkers = L.layerGroup();
+        favs.forEach((r, i) => {
+          const coords = geocodeListing(r, i);
+          if (!coords) return;
+          const priceStr = r.price ? r.price.toLocaleString('ru-RU') + ' ₸' : '—';
+          const photo = r.photo ? r.photo.split('|')[0] : '';
+          const photoHtml = photo ? `<img src="${safeUrl(photo)}" style="width:100%;max-height:110px;object-fit:contain;border-radius:6px;margin-bottom:6px;" onerror="this.style.display='none'">` : '';
+          const altParts = [];
+          if (r.price_rub != null) altParts.push(r.price_rub.toLocaleString('ru-RU') + ' ₽');
+          if (r.price_usd != null) altParts.push('$' + r.price_usd);
+          const altPrice = altParts.join(' · ');
+          const addrLine = [escapeHtml(r.address || ''), r.source].filter(Boolean).join(' · ');
+          const fmtK = v => v >= 1000 ? Math.round(v / 1000) + 'к' : String(v);
+          let markerLabel = priceStr;
+          if (r.price) {
+            const parts = ['★ ' + fmtK(r.price) + ' ₸'];
+            if (r.price_rub != null) parts.push(fmtK(Math.round(r.price_rub)) + ' ₽');
+            if (r.price_usd != null) parts.push('$' + Math.round(r.price_usd));
+            markerLabel = parts.join(' · ');
+          }
+          const marker = L.marker(coords, {
+            icon: L.divIcon({
+              className: 'listing-marker',
+              html: `<div style="background:#f59e0b;color:#fff;padding:2px 7px;border-radius:10px;font-size:.62rem;font-weight:700;white-space:nowrap;box-shadow:0 2px 5px rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.25);">${markerLabel}</div>`,
+              iconSize: [130, 16], iconAnchor: [65, 8]
+            })
+          });
+          marker.bindPopup(`
+            <div style="min-width:190px;max-width:260px;">
+              ${photoHtml}
+              <div style="font-weight:600;font-size:.85rem;margin-bottom:4px;">${escapeHtml(r.title)}</div>
+              <div style="color:#f59e0b;font-weight:800;font-size:1.05rem;">★ ${priceStr}</div>
+              ${altPrice ? `<div style="font-size:.78rem;color:#666;font-weight:600;margin-top:2px;">${altPrice}</div>` : ''}
+              ${addrLine ? `<div style="font-size:.75rem;color:#666;margin-top:4px;">${addrLine}</div>` : ''}
+              <a href="${safeUrl(r.url)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:6px;color:#3b82f6;font-size:.8rem;font-weight:600;text-decoration:none;">Открыть →</a>
+            </div>
+          `);
+          marker.addTo(listingMarkers);
+          listingMarkerRefs[i] = marker;
+        });
+        listingMarkers.addTo(map);
+      } catch (err) {
+        console.error('drawFavoritesOnly:', err);
+        alert('Ошибка загрузки избранного: ' + err.message);
+        favoritesOnlyMode = false;
+        document.getElementById('favoritesOnlyToggle').classList.remove('active');
+      }
+    }
+
+    // === Search ===
+    async function clearResults() {
+      if (!confirm('Очистить кэш результатов? Ранее найденные квартиры будут удалены, останутся только новые при следующем поиске.')) return;
+      try {
+        await fetch('/api/results/clear', {method: 'POST'});
+        currentResults = [];
+        applyClientFilters();
+      } catch (err) {
+        alert('Ошибка: ' + err.message);
+      }
+    }
+
+    // Parser (crawl) vs search engine (filter) are split:
+    //  - getCrawlParams(): sources + max_pages — collects listings into the cache.
+    //  - getSearchParams(): filter criteria for the heatmap cache key / server.
+    //  - applyClientFilters(): narrows the cached set live for the grid + map.
+    function getCrawlParams() {
+      const params = {};
+      document.querySelectorAll('#sourcesGroup input[name="sources"]:checked').forEach(cb => {
+        (params.sources = params.sources || []).push(cb.value);
+      });
+      const mp = document.getElementById('maxPagesInput');
+      if (mp && mp.value) params.max_pages = mp.value;
+      return params;
+    }
+
+    function getSearchParams() {
+      const form = document.getElementById('searchForm');
+      const fd = new FormData(form);
+      const params = {};
+      const rooms = fd.getAll('rooms').map(Number);
+      if (rooms.length) params.rooms = rooms;
+      const fields = ['query', 'price_min', 'price_max', 'district', 'floor_min', 'floor_max', 'area_min', 'area_max'];
+      fields.forEach(f => {
+        const v = fd.get(f);
+        if (v) params[f] = v;
+      });
+      return params;
+    }
+
+    function getFilterCriteria() {
+      const form = document.getElementById('searchForm');
+      const fd = new FormData(form);
+      const num = (name) => {
+        const v = fd.get(name);
+        const n = (v !== null && v !== '') ? Number(v) : NaN;
+        return Number.isFinite(n) ? n : null;
+      };
+      const rooms = fd.getAll('rooms').map(Number);
+      const district = (fd.get('district') || '').toString().trim();
+      return {
+        query: (fd.get('query') || '').toString().trim().toLowerCase(),
+        rooms: rooms.length ? new Set(rooms) : null,
+        price_min: num('price_min'),
+        price_max: num('price_max'),
+        district,
+        floor_min: num('floor_min'),
+        floor_max: num('floor_max'),
+        area_min: num('area_min'),
+        area_max: num('area_max'),
+      };
+    }
+
+    function applyClientFilters() {
+      const c = getFilterCriteria();
+      const escaped = c.district ? c.district.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '';
+      const districtRe = escaped ? new RegExp('\\b' + escaped + '\\b') : null;
+      displayedResults = currentResults.filter(r => {
+        if (c.query) {
+          const hay = ((r.title || '') + ' ' + (r.description || '') + ' ' + (r.address || '')).toLowerCase();
+          if (!hay.includes(c.query)) return false;
+        }
+        if (c.rooms && !(r.rooms != null && c.rooms.has(r.rooms))) return false;
+        if (c.price_min != null && (r.price == null || r.price < c.price_min)) return false;
+        if (c.price_max != null && (r.price == null || r.price > c.price_max)) return false;
+        if (c.area_min != null && (r.area == null || r.area < c.area_min)) return false;
+        if (c.area_max != null && (r.area == null || r.area > c.area_max)) return false;
+        if (c.floor_min != null && (r.floor == null || r.floor < c.floor_min)) return false;
+        if (c.floor_max != null && (r.floor == null || r.floor > c.floor_max)) return false;
+        if (districtRe) {
+          const hay = ((r.address || '') + ' ' + (r.title || '')).toLowerCase();
+          if (!districtRe.test(hay)) return false;
+        }
+        return true;
+      });
+      renderResults(displayedResults, displayedResults.length);
+      document.getElementById('exportButtons').style.display = displayedResults.length ? 'flex' : 'none';
+      try { drawListingMarkers(); } catch(mErr) { console.error('drawListingMarkers:', mErr); }
+      try { drawDistricts(); } catch(dErr) { console.error('drawDistricts:', dErr); }
+    }
+
+    async function runCrawl() {
+      const btn = document.getElementById('crawlBtn');
+      btn.disabled = true; btn.textContent = 'Идёт поиск...';
+      document.getElementById('loading').classList.add('active');
+      try {
+        const params = getCrawlParams();
+        const resp = await fetch('/api/search', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(params)
+        });
+        const data = await resp.json();
+        currentResults = data.results;
+        applyClientFilters();
+        document.getElementById('loading').classList.remove('active');
+        if (data.parser_stats) {
+          lastParserStats = data.parser_stats;
+          renderParserStats(lastParserStats);
+          const errCount = data.parser_stats.filter(s => ['http_error','ssl_error','connection_error','timeout','error'].includes(s.status)).length;
+          const badge = document.getElementById('analyzerBadge');
+          if (badge) {
+            if (errCount > 0) { badge.textContent = errCount; badge.style.display = 'inline-block'; }
+            else { badge.style.display = 'none'; }
+          }
+        }
+        loadHeatmap(document.getElementById('propertyType').value).catch(hErr => console.error('loadHeatmap:', hErr));
+      } catch (err) {
+        alert('Ошибка поиска: ' + err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Поиск';
+        document.getElementById('loading').classList.remove('active');
+      }
+    }
+
+    document.getElementById('crawlBtn').addEventListener('click', runCrawl);
+    // Sidebar: Enter submits the form → just re-apply filters (live already does).
+    document.getElementById('searchForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      applyClientFilters();
+    });
+    let _filterDebounce = null;
+    document.getElementById('searchForm').addEventListener('input', function() {
+      clearTimeout(_filterDebounce);
+      _filterDebounce = setTimeout(applyClientFilters, 150);
+    });
+    document.getElementById('searchForm').addEventListener('change', function() {
+      clearTimeout(_filterDebounce);
+      _filterDebounce = setTimeout(applyClientFilters, 150);
+    });
+    document.getElementById('resetFiltersBtn').addEventListener('click', function() {
+      const form = document.getElementById('searchForm');
+      form.querySelectorAll('input[type="text"], input[type="number"]').forEach(el => { el.value = ''; });
+      form.querySelectorAll('input[name="rooms"]').forEach(cb => { cb.checked = false; });
+      const dist = form.querySelector('select[name="district"]');
+      if (dist) dist.selectedIndex = 0;
+      applyClientFilters();
+    });
+
+    function renderResults(results, total) {
+      const grid = document.getElementById('resultsGrid');
+      if (total === undefined) total = results.length;
+      document.getElementById('resultsTitle').textContent = `Результаты: ${total} объявлений`;
+      if (!results.length) {
+        grid.innerHTML = '<div class="empty-state">Ничего не найдено. Попробуйте изменить параметры.</div>';
+        return;
+      }
+      grid.innerHTML = results.map((r, i) => {
+        const photos = (r.photo || '').split('|').filter(p => p);
+        let photoHtml;
+        if (photos.length > 1) {
+          const slides = photos.map((p, idx) => `<img src="${safeUrl(p)}" onerror="this.style.display='none'">`).join('');
+          photoHtml = `
+            <div class="photo-carousel" id="carousel-${i}">
+              <div class="photo-carousel-track" id="track-${i}">${slides}</div>
+              <button class="photo-nav prev" onclick="event.stopPropagation(); slidePhoto(${i},-1)">&#8249;</button>
+              <button class="photo-nav next" onclick="event.stopPropagation(); slidePhoto(${i},1)">&#8250;</button>
+              <div class="photo-counter" id="counter-${i}">1 / ${photos.length}</div>
+            </div>`;
+        } else if (photos.length === 1) {
+          photoHtml = `<img class="listing-img" src="${safeUrl(photos[0])}" onerror="this.style.display='none'">`;
+        } else {
+          photoHtml = `<div class="listing-img" style="display:flex;align-items:center;justify-content:center;color:var(--text-dim);">Нет фото</div>`;
+        }
+        const roomsStr = r.rooms === 0 ? 'Студия' : (r.rooms ? r.rooms + ' комн.' : '');
+        const areaStr = r.area ? r.area + ' м²' : '';
+        const floorStr = r.floor ? `эт. ${r.floor}${r.total_floors ? '/' + r.total_floors : ''}` : '';
+        const pricePerM2 = (r.price && r.area) ? Math.round(r.price / r.area).toLocaleString('ru-RU') + ' тг/м²' : '';
+        // Slice the raw text FIRST: slicing escaped HTML can cut an entity in half.
+        const descPreview = r.description ? escapeHtml(r.description.slice(0, 120)) + (r.description.length > 120 ? '…' : '') : '';
+        const isSaved = savedKeys.has(r.listing_key);
+        const newBadge = r.is_new ? `<div class="badge-new">NEW</div>` : '';
+        let priceBadge = '';
+        if (r.price_changed && r.prev_price != null) {
+          const diff = r.price - r.prev_price;
+          const sign = diff > 0 ? '+' : '';
+          priceBadge = `<div class="badge-price-change">цена: ${sign}${diff.toLocaleString('ru-RU')}</div>`;
+        }
+        return `
+          <div class="listing-card" data-idx="${i}" onclick="focusMarker(${i})">
+            <button class="btn-fav ${isSaved ? 'saved' : ''}" onclick="event.stopPropagation(); toggleFavorite(${i})" title="Сохранить в избранное">${isSaved ? '★' : '☆'}</button>
+            ${newBadge}
+            ${priceBadge}
+            ${photoHtml}
+            <div class="listing-body">
+              <div class="listing-title">${escapeHtml(r.title)}</div>
+              <div class="listing-price">${r.price_str}${r.price_rub ? ` <span class="price-conv" data-price="${r.price}">· ${r.price_rub.toLocaleString('ru-RU')} руб · $${r.price_usd}</span>` : ''}</div>
+              ${pricePerM2 ? `<div class="price-per-m2">${pricePerM2}</div>` : ''}
+              <div class="card-meta-grid">
+                ${roomsStr ? `<span class="card-chip"><b>${escapeHtml(roomsStr)}</b></span>` : ''}
+                ${areaStr ? `<span class="card-chip">${escapeHtml(areaStr)}</span>` : ''}
+                ${floorStr ? `<span class="card-chip">${escapeHtml(floorStr)}</span>` : ''}
+              </div>
+              ${r.address ? `<div style="font-size:.8rem;color:var(--text-dim);margin-top:6px;">${escapeHtml(r.address)}</div>` : ''}
+              ${descPreview ? `<div class="desc-preview">${descPreview}</div>` : ''}
+              ${(r.date_published || r.date_updated) ? `<div class="date-line">${r.date_published ? `<span>Опубликовано: ${r.date_published}</span>` : ''}${r.date_updated ? `<span>Обновлено: ${r.date_updated}</span>` : ''}</div>` : ''}
+              <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+                <span class="listing-source">${r.source}</span>
+                <a class="listing-link" href="${safeUrl(r.url)}" target="_blank" rel="noopener">Открыть →</a>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    const carouselState = {};
+
+    function slidePhoto(idx, dir) {
+      const track = document.getElementById('track-' + idx);
+      if (!track) return;
+      const photos = track.children.length;
+      if (!carouselState[idx]) carouselState[idx] = 0;
+      carouselState[idx] = (carouselState[idx] + dir + photos) % photos;
+      track.style.transform = `translateX(-${carouselState[idx] * 100}%)`;
+      const counter = document.getElementById('counter-' + idx);
+      if (counter) counter.textContent = `${carouselState[idx] + 1} / ${photos}`;
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text || '';
+      return div.innerHTML;
+    }
+
+    // Only http(s) URLs may reach href/src — blocks javascript:/data: payloads
+    // from scraped listing fields.
+    function safeUrl(url) {
+      try {
+        const u = new URL(url, window.location.origin);
+        if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+      } catch (e) { /* fall through */ }
+      return '#';
+    }
+
+    // === Search defaults ===
+    let searchDefaults = null;
+
+    async function loadSearchDefaults() {
+      try {
+        const resp = await fetch('/api/search-defaults');
+        searchDefaults = await resp.json();
+        fillDefaultsForm(searchDefaults);
+        applyDefaultsToForm();
+      } catch (err) {
+        console.error('loadSearchDefaults:', err);
+      }
+    }
+
+    function fillDefaultsForm(sd) {
+      if (!sd) return;
+      // rooms checkboxes
+      const rooms = Array.isArray(sd.rooms) ? sd.rooms.map(String) : [];
+      [0,1,2,3,4].forEach(n => {
+        const cb = document.getElementById('def-rooms-' + n);
+        if (cb) cb.checked = rooms.includes(String(n));
+      });
+      // numeric/text fields
+      const fields = ['price_min','price_max','district','floor_min','floor_max','area_min','area_max'];
+      fields.forEach(f => {
+        const el = document.getElementById('def-' + f);
+        if (el) el.value = sd[f] != null ? sd[f] : '';
+      });
+    }
+
+    function collectDefaultsFromForm() {
+      const sd = {};
+      const rooms = [];
+      [0,1,2,3,4].forEach(n => {
+        const cb = document.getElementById('def-rooms-' + n);
+        if (cb && cb.checked) rooms.push(n);
+      });
+      sd.rooms = rooms;
+      ['price_min','price_max','floor_min','floor_max','area_min','area_max'].forEach(f => {
+        const el = document.getElementById('def-' + f);
+        sd[f] = el && el.value !== '' ? el.value : null;
+      });
+      const districtEl = document.getElementById('def-district');
+      sd.district = districtEl ? districtEl.value : '';
+      return sd;
+    }
+
+    async function saveSearchDefaults() {
+      const btn = document.getElementById('saveDefaultsBtn');
+      btn.disabled = true; btn.textContent = 'Сохранение...';
+      try {
+        const sd = collectDefaultsFromForm();
+        const resp = await fetch('/api/search-defaults', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(sd)
+        });
+        const data = await resp.json();
+        if (data.ok) {
+          searchDefaults = data.search_defaults;
+          alert('Параметры по умолчанию сохранены');
+        } else {
+          alert('Ошибка: ' + (data.error || 'неизвестная'));
+        }
+      } catch (err) {
+        alert('Ошибка: ' + err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Сохранить параметры';
+      }
+    }
+
+    function applyDefaultsToForm() {
+      if (!searchDefaults) return;
+      // rooms
+      const form = document.getElementById('searchForm');
+      const rooms = Array.isArray(searchDefaults.rooms) ? searchDefaults.rooms.map(String) : [];
+      form.querySelectorAll('input[name="rooms"]').forEach(cb => {
+        cb.checked = rooms.includes(cb.value);
+      });
+      // price
+      setFormValue(form, 'price_min', searchDefaults.price_min);
+      setFormValue(form, 'price_max', searchDefaults.price_max);
+      // district
+      setFormValue(form, 'district', searchDefaults.district);
+      // floor
+      setFormValue(form, 'floor_min', searchDefaults.floor_min);
+      setFormValue(form, 'floor_max', searchDefaults.floor_max);
+      // area
+      setFormValue(form, 'area_min', searchDefaults.area_min);
+      setFormValue(form, 'area_max', searchDefaults.area_max);
+      // Programmatic value changes don't fire 'input', so re-filter explicitly.
+      applyClientFilters();
+    }
+
+    function setFormValue(form, name, val) {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (el) el.value = (val != null && val !== '') ? val : '';
+    }
+
+    async function resetSearchDefaults() {
+      if (!confirm('Сбросить параметры поиска к заводским (100-300т, студии и 1к)?')) return;
+      const sd = {price_min: 100000, price_max: 300000, rooms: [0,1], district: '',
+                  floor_min: null, floor_max: null, area_min: null, area_max: null};
+      try {
+        await fetch('/api/search-defaults', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(sd)
+        });
+        searchDefaults = sd;
+        fillDefaultsForm(sd);
+        applyDefaultsToForm();
+      } catch (err) {
+        alert('Ошибка: ' + err.message);
+      }
+    }
+
+    // === Parser Analyzer ===
+    let lastParserStats = [];
+
+    const STATUS_LABELS = {
+      ok: 'OK', empty: 'Пусто', http_error: 'HTTP ошибка',
+      ssl_error: 'SSL ошибка', connection_error: 'Нет связи',
+      timeout: 'Таймаут', error: 'Ошибка', pending: 'Ожидание',
+    };
+    const ERROR_STATUSES = new Set(['http_error','ssl_error','connection_error','timeout','error']);
+
+    async function loadParserStats() {
+      try {
+        const resp = await fetch('/api/parser-status');
+        const data = await resp.json();
+        lastParserStats = data.parsers || [];
+        renderParserStats(lastParserStats);
+      } catch (err) {
+        console.error('loadParserStats:', err);
+      }
+    }
+
+    function renderParserStats(stats) {
+      const grid = document.getElementById('analyzerGrid');
+      const summary = document.getElementById('analyzerSummary');
+      if (!stats || !stats.length) {
+        grid.innerHTML = '<div class="empty-state">Запустите поиск — здесь появится детальная статистика по каждому парсеру.</div>';
+        summary.innerHTML = '';
+        return;
+      }
+      const ok = stats.filter(s => s.status === 'ok').length;
+      const empty = stats.filter(s => s.status === 'empty').length;
+      const errors = stats.filter(s => ERROR_STATUSES.has(s.status)).length;
+      const totalResults = stats.reduce((sum, s) => sum + (s.results_count || 0), 0);
+      const totalMs = stats.reduce((sum, s) => sum + (s.duration_ms || 0), 0);
+      summary.innerHTML = `
+        <div class="analyzer-summary-card"><div class="num" style="color:var(--success);">${ok}</div><div class="label">успешно</div></div>
+        <div class="analyzer-summary-card"><div class="num" style="color:var(--text-dim);">${empty}</div><div class="label">пусто</div></div>
+        <div class="analyzer-summary-card"><div class="num" style="color:var(--danger);">${errors}</div><div class="label">ошибок</div></div>
+        <div class="analyzer-summary-card"><div class="num" style="color:var(--accent);">${totalResults}</div><div class="label">объявлений</div></div>
+        <div class="analyzer-summary-card"><div class="num">${(totalMs/1000).toFixed(1)}с</div><div class="label">общее время</div></div>
+      `;
+      grid.innerHTML = stats.map(s => {
+        const isErr = ERROR_STATUSES.has(s.status);
+        const label = STATUS_LABELS[s.status] || s.status;
+        const durStr = s.duration_ms ? (s.duration_ms >= 1000 ? (s.duration_ms/1000).toFixed(1)+'с' : Math.round(s.duration_ms)+'мс') : '—';
+        const ts = s.timestamp ? s.timestamp.slice(11) : '';
+        return `
+          <div class="parser-card">
+            <div class="parser-card-header">
+              <div>
+                <div class="parser-name">${escapeHtml(s.name)}</div>
+                <div class="parser-url">${escapeHtml(s.base_url)}</div>
+              </div>
+              <span class="status-badge ${isErr ? 'error' : s.status === 'ok' ? 'ok' : 'empty'}">${label}</span>
+            </div>
+            <div class="parser-metrics">
+              <span class="parser-metric">Результатов: <b>${s.results_count}</b></span>
+              <span class="parser-metric">Страниц: <b>${s.pages_fetched}</b></span>
+              <span class="parser-metric">Время: <b>${durStr}</b></span>
+              ${s.http_status ? `<span class="parser-metric">HTTP: <b>${escapeHtml(s.http_status)}</b></span>` : ''}
+              ${s.error_type ? `<span class="parser-metric">Тип: <b>${escapeHtml(s.error_type)}</b></span>` : ''}
+            </div>
+            ${isErr && s.error ? `<div class="parser-error">${escapeHtml(s.error)}</div>` : ''}
+            ${ts ? `<div style="font-size:.68rem;color:var(--text-dim);margin-top:6px;">Время запуска: ${escapeHtml(ts)}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    // === Export ===
+    document.getElementById('exportTxt').addEventListener('click', () => exportFile('txt'));
+    document.getElementById('exportPdfPortrait').addEventListener('click', () => exportPdf('portrait'));
+    document.getElementById('exportPdfLandscape').addEventListener('click', () => exportPdf('landscape'));
+
+    function exportBtnBusy(on) {
+      for (const id of ['exportTxt', 'exportPdfPortrait', 'exportPdfLandscape']) {
+        const b = document.getElementById(id);
+        if (!b) continue;
+        b.disabled = on;
+        b.style.opacity = on ? 0.5 : '';
+      }
+    }
+
+    async function exportFile(type) {
+      exportBtnBusy(true);
+      try {
+        const resp = await fetch(`/api/export/${type}`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({results: currentResults})
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        downloadBlob(blob, resp.headers.get('Content-Disposition'));
+      } catch (e) {
+        alert('Не удалось сформировать файл: ' + e.message);
+      } finally {
+        exportBtnBusy(false);
+      }
+    }
+    async function exportPdf(orientation) {
+      exportBtnBusy(true);
+      try {
+        const resp = await fetch('/api/export/pdf', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({results: currentResults, orientation})
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        downloadBlob(blob, resp.headers.get('Content-Disposition'));
+      } catch (e) {
+        alert('Не удалось сформировать PDF: ' + e.message);
+      } finally {
+        exportBtnBusy(false);
+      }
+    }
+    function downloadBlob(blob, disposition) {
+      let filename = 'export';
+      if (disposition) {
+        const m = disposition.match(/filename="?([^"]+)"?/);
+        if (m) filename = m[1];
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // === Favorites export ===
+    function favExportBtnBusy(on) {
+      for (const id of ['favExportTxt', 'favExportPdfPortrait', 'favExportPdfLandscape']) {
+        const b = document.getElementById(id);
+        if (!b) continue;
+        b.disabled = on;
+        b.style.opacity = on ? 0.5 : '';
+      }
+    }
+
+    async function fetchFavoritesData() {
+      const resp = await fetch('/api/favorites');
+      const data = await resp.json();
+      return data.favorites || [];
+    }
+
+    document.getElementById('favExportTxt').addEventListener('click', async () => {
+      favExportBtnBusy(true);
+      try {
+        const favs = await fetchFavoritesData();
+        const resp = await fetch('/api/export/txt', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({results: favs})
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        downloadBlob(blob, resp.headers.get('Content-Disposition'));
+      } catch (e) {
+        alert('Не удалось сформировать TXT: ' + e.message);
+      } finally {
+        favExportBtnBusy(false);
+      }
+    });
+    document.getElementById('favExportPdfPortrait').addEventListener('click', async () => {
+      favExportBtnBusy(true);
+      try {
+        const favs = await fetchFavoritesData();
+        const resp = await fetch('/api/export/pdf', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({results: favs, orientation: 'portrait'})
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        downloadBlob(blob, resp.headers.get('Content-Disposition'));
+      } catch (e) {
+        alert('Не удалось сформировать PDF: ' + e.message);
+      } finally {
+        favExportBtnBusy(false);
+      }
+    });
+    document.getElementById('favExportPdfLandscape').addEventListener('click', async () => {
+      favExportBtnBusy(true);
+      try {
+        const favs = await fetchFavoritesData();
+        const resp = await fetch('/api/export/pdf', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({results: favs, orientation: 'landscape'})
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const blob = await resp.blob();
+        downloadBlob(blob, resp.headers.get('Content-Disposition'));
+      } catch (e) {
+        alert('Не удалось сформировать PDF: ' + e.message);
+      } finally {
+        favExportBtnBusy(false);
+      }
+    });
+
+    // === Favorites ===
+    let savedKeys = new Set();
+    let priceChartInstance = null;
+    let lastCheckResults = {};  // listing_key → {changed, error, new_price, etc.}
+
+    // Favorite keys come from the server (listing_key in the API response).
+    // Never re-implement the hash on the client — it must match db.listing_key.
+
+    function switchTab(tab) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      if (tab === 'search') {
+        document.getElementById('tabSearch').classList.add('active');
+        document.getElementById('searchTab').classList.add('active');
+        setTimeout(() => map.invalidateSize(), 100);
+      } else if (tab === 'favorites') {
+        document.getElementById('tabFav').classList.add('active');
+        document.getElementById('favTab').classList.add('active');
+        loadFavorites();
+      } else if (tab === 'analyzer') {
+        document.getElementById('tabAnalyzer').classList.add('active');
+        document.getElementById('analyzerTab').classList.add('active');
+        const badge = document.getElementById('analyzerBadge');
+        if (badge) badge.style.display = 'none';
+        loadParserStats();
+      } else {
+        document.getElementById('tabSettings').classList.add('active');
+        document.getElementById('settingsTab').classList.add('active');
+        markActiveTheme();
+        loadPhotoCacheSetting();
+      }
+    }
+
+    function currentTheme() {
+      return document.documentElement.getAttribute('data-theme') || 'midnight';
+    }
+
+    function applyThemeLocal(t) {
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem('theme', t); } catch (e) {}
+      markActiveTheme();
+    }
+
+    function markActiveTheme() {
+      const cur = currentTheme();
+      document.querySelectorAll('.theme-swatch').forEach(s => {
+        s.classList.toggle('active', s.dataset.theme === cur);
+      });
+    }
+
+    async function setTheme(t) {
+      applyThemeLocal(t);
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({theme: t})
+        });
+      } catch (err) {
+        console.error('setTheme:', err);
+      }
+    }
+
+    async function setHideNoPhoto(v) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({hide_no_photo: v})
+        });
+      } catch (err) {
+        console.error('setHideNoPhoto:', err);
+      }
+    }
+
+    // === Per-parser max_pages settings ===
+    let parserMaxPages = {};
+    const PARSER_LABELS = {
+      'krisha.kz': 'krisha.kz', 'olx.kz': 'olx.kz', 'kn.kz': 'kn.kz',
+      'etagi.com': 'etagi.com', 'kvartirka.kz': 'kvartirka.kz',
+      'telegram': 'telegram'
+    };
+
+    async function loadParserMaxPages() {
+      try {
+        const resp = await fetch('/api/settings');
+        const s = await resp.json();
+        parserMaxPages = s.parser_max_pages || {};
+        renderParserMaxPages();
+      } catch (err) {
+        console.error('loadParserMaxPages:', err);
+      }
+    }
+
+    function renderParserMaxPages() {
+      const grid = document.getElementById('parserMaxPagesGrid');
+      if (!grid) return;
+      grid.innerHTML = '';
+      Object.keys(PARSER_LABELS).forEach(name => {
+        const val = parserMaxPages[name] || 1;
+        const div = document.createElement('div');
+        div.className = 'form-group';
+        div.innerHTML = `
+          <label>${name}</label>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <input type="number" min="1" max="30" value="${val}" id="pmp-${name}"
+                   onchange="setParserMaxPages('${name}', this.value)" style="width:70px;">
+            <span style="font-size:.75rem;color:var(--text-dim);">стр.</span>
+          </div>`;
+        grid.appendChild(div);
+      });
+    }
+
+    async function setParserMaxPages(name, val) {
+      const n = parseInt(val, 10);
+      if (isNaN(n) || n < 1 || n > 30) {
+        alert('Введите число от 1 до 30');
+        loadParserMaxPages();
+        return;
+      }
+      parserMaxPages[name] = n;
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({parser_max_pages: parserMaxPages})
+        });
+      } catch (err) {
+        console.error('setParserMaxPages:', err);
+      }
+      // Server re-applies the filter to the cached results
+      loadCachedResults();
+    }
+
+    // === Photo cache settings ===
+    async function loadPhotoCacheSetting() {
+      try {
+        const resp = await fetch('/api/settings');
+        const s = await resp.json();
+        const input = document.getElementById('photoCacheMbInput');
+        if (input) input.value = s.photo_cache_mb || 500;
+        await updatePhotoCacheInfo();
+      } catch (err) {
+        console.error('loadPhotoCacheSetting:', err);
+      }
+    }
+
+    async function updatePhotoCacheInfo() {
+      try {
+        const resp = await fetch('/api/photo-cache');
+        const data = await resp.json();
+        const el = document.getElementById('photoCacheInfo');
+        if (el) {
+          el.innerHTML = `Занято: <b>${data.size_mb} МБ</b> (${data.files} файлов) · Лимит: ${data.max_mb} МБ`;
+        }
+      } catch (err) {
+        console.error('updatePhotoCacheInfo:', err);
+      }
+    }
+
+    async function setPhotoCacheMb(val) {
+      const n = parseInt(val, 10);
+      if (isNaN(n) || n < 50 || n > 10000) {
+        alert('Введите число от 50 до 10000');
+        loadPhotoCacheSetting();
+        return;
+      }
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({photo_cache_mb: n})
+        });
+        await updatePhotoCacheInfo();
+      } catch (err) {
+        console.error('setPhotoCacheMb:', err);
+      }
+    }
+
+    async function clearPhotoCache() {
+      if (!confirm('Удалить все картинки из кэша? При следующем экспорте они скачаются заново.')) return;
+      try {
+        const resp = await fetch('/api/photo-cache/clear', {method: 'POST'});
+        const data = await resp.json();
+        await updatePhotoCacheInfo();
+      } catch (err) {
+        alert('Ошибка: ' + err.message);
+      }
+    }
+
+    async function clearFavorites() {
+      if (!confirm('Удалить ВСЁ избранное, историю цен и кэш результатов? Это действие необратимо.')) return;
+      const btn = document.getElementById('clearFavBtn');
+      btn.disabled = true; btn.textContent = 'Удаление...';
+      try {
+        const resp = await fetch('/api/favorites/clear', {method: 'POST'});
+        const data = await resp.json();
+        savedKeys.clear();
+        updateFavCount();
+        loadFavorites();
+        currentResults = [];
+        renderResults([], 0);
+        document.getElementById('exportButtons').style.display = 'none';
+        drawListingMarkers();
+        alert('Удалено объявлений: ' + (data.removed || 0));
+      } catch (err) {
+        alert('Ошибка: ' + err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Удалить всё избранное';
+      }
+    }
+
+    async function resetDatabase() {
+      if (!confirm('Удалить ВСЮ базу данных (избранное + история цен + кэш результатов)? Файл БД будет пересоздан. Действие необратимо.')) return;
+      const btn = document.getElementById('resetDbBtn');
+      btn.disabled = true; btn.textContent = 'Удаление...';
+      try {
+        const resp = await fetch('/api/database/reset', {method: 'POST'});
+        const data = await resp.json();
+        savedKeys.clear();
+        updateFavCount();
+        loadFavorites();
+        currentResults = [];
+        renderResults([], 0);
+        document.getElementById('exportButtons').style.display = 'none';
+        drawListingMarkers();
+        alert(data.message || 'База данных удалена');
+      } catch (err) {
+        alert('Ошибка: ' + err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Удалить всю базу';
+      }
+    }
+
+    async function toggleFavorite(index) {
+      const r = displayedResults[index];
+      if (!r) return;
+      const key = r.listing_key;
+      if (!key) return;
+      try {
+        if (savedKeys.has(key)) {
+          await fetch(`/api/favorites/${key}`, {method: 'DELETE'});
+          savedKeys.delete(key);
+        } else {
+          await fetch('/api/favorites', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({...r, listing_key: key})
+          });
+          savedKeys.add(key);
+        }
+      } catch (err) {
+        // Without this the rejected promise is unhandled and the star
+        // silently stops working after a network error.
+        alert('Ошибка избранного: ' + err.message);
+        return;
+      }
+      renderResults(displayedResults);
+      updateFavCount();
+    }
+
+    async function loadFavorites() {
+      try {
+        const resp = await fetch('/api/favorites');
+        const data = await resp.json();
+        savedKeys.clear();
+        data.favorites.forEach(f => savedKeys.add(f.listing_key));
+        renderFavorites(data.favorites);
+        updateFavCount();
+      } catch (err) {
+        console.error('loadFavorites:', err);
+      }
+    }
+
+    function updateFavCount() {
+      document.getElementById('favCount').textContent = savedKeys.size;
+    }
+
+    function renderFavorites(favs) {
+      const list = document.getElementById('favoritesList');
+      const header = document.querySelector('.favorites-header h2');
+      header.textContent = `Избранные квартиры (${favs.length}) — оценки, комментарии и мониторинг цен`;
+      const favExportBtns = document.getElementById('favExportButtons');
+      if (favExportBtns) favExportBtns.style.display = favs.length ? 'flex' : 'none';
+      if (!favs.length) {
+        list.innerHTML = '<div class="empty-state">Нет сохранённых вариантов. Нажмите на звёздочку на карточке объявления.</div>';
+        return;
+      }
+      list.innerHTML = favs.map(f => {
+        // f.photo can be a "|"-joined gallery — take the first photo only.
+        const firstPhoto = f.photo ? f.photo.split('|')[0] : '';
+        const photo = firstPhoto ? `<img class="fav-card-img" src="${safeUrl(firstPhoto)}" onerror="this.style.display='none'">` : '';
+        let changeBadge = '';
+        if (f.price_change) {
+          const c = f.price_change;
+          const arrow = c.direction === 'up' ? '↑' : (c.direction === 'down' ? '↓' : '=');
+          changeBadge = `<span class="price-change ${c.direction}">${arrow} ${c.diff > 0 ? '+' : ''}${c.diff.toLocaleString('ru-RU')} (${c.percent}%)</span>`;
+        }
+        // Check-price results: mark listings that are no longer available
+        // (error from re-fetch — page gone, 404, listing not found).
+        const check = lastCheckResults[f.listing_key];
+        const isUnavailable = check && check.error;
+        const unavailableBadge = isUnavailable
+          ? `<span class="fav-badge-unavailable" title="${escapeHtml(check.error)}">недоступно</span>`
+          : '';
+        const cardClass = isUnavailable ? 'fav-card unavailable' : 'fav-card';
+        const stars = [1,2,3,4,5].map(n =>
+          `<span class="star ${n <= f.rating ? 'active' : ''}" onclick="rateFavorite('${f.listing_key}', ${n})">★</span>`
+        ).join('');
+        return `
+          <div class="${cardClass}" style="margin-bottom:12px;">
+            ${photo}
+            <div class="fav-card-body">
+              <div class="fav-card-title">${escapeHtml(f.title)}${unavailableBadge}</div>
+              <div class="fav-card-price">${f.price_str}</div>
+      <div style="font-size:.75rem;color:var(--text-dim);margin-top:2px;">${f.price && f.price_rub != null ? f.price_rub.toLocaleString('ru-RU', {maximumFractionDigits:0}) + ' руб · $' + (f.price_usd || 0).toFixed(0) : ''}</div>
+              <div class="fav-card-meta">${escapeHtml(f.address || '—')} · ${f.source}</div>
+              ${(f.date_published || f.date_updated) ? `<div class="date-line">${f.date_published ? `<span>Опубликовано: ${f.date_published}</span>` : ''}${f.date_updated ? `<span>Обновлено: ${f.date_updated}</span>` : ''}</div>` : ''}
+              <div class="fav-info-row">
+                <div class="stars" data-key="${f.listing_key}">${stars}</div>
+                ${changeBadge}
+              </div>
+              <textarea class="comment-box" placeholder="Ваш комментарий..." onchange="saveComment('${f.listing_key}', this.value)">${escapeHtml(f.comment || '')}</textarea>
+              <div class="fav-actions">
+                <button class="btn-show-chart" onclick="showChart('${f.listing_key}')">График цен</button>
+                <a class="listing-link" href="${safeUrl(f.url)}" target="_blank" rel="noopener">Открыть →</a>
+                <button class="btn-del-fav" onclick="deleteFavorite('${f.listing_key}')">Удалить</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function rateFavorite(key, rating) {
+      await fetch(`/api/favorites/${key}/rate`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({rating})
+      });
+      loadFavorites();
+    }
+
+    async function saveComment(key, comment) {
+      await fetch(`/api/favorites/${key}/comment`, {
+        method: 'PUT', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({comment})
+      });
+    }
+
+    async function deleteFavorite(key) {
+      await fetch(`/api/favorites/${key}`, {method: 'DELETE'});
+      savedKeys.delete(key);
+      loadFavorites();
+      renderResults(displayedResults);
+    }
+
+    document.getElementById('checkPricesBtn').addEventListener('click', async function() {
+      const btn = this;
+      btn.disabled = true; btn.textContent = 'Проверка...';
+      try {
+        const resp = await fetch('/api/favorites/check-prices', {method: 'POST'});
+        const data = await resp.json();
+        // Store check results keyed by listing_key so renderFavorites can
+        // mark unavailable listings (error = page gone / 404 / not found).
+        lastCheckResults = {};
+        (data.results || []).forEach(r => {
+          if (r.listing_key) lastCheckResults[r.listing_key] = r;
+        });
+        const unavailable = (data.results || []).filter(r => r.error);
+        let msg = `Проверено: ${data.checked}. Изменений цен: ${data.changed_count}.`;
+        if (unavailable.length) {
+          msg += `\nНедоступно: ${unavailable.length}.`;
+        }
+        const changed = (data.results || []).filter(r => r.changed);
+        if (changed.length) {
+          msg += '\n\n' + changed.map(c => {
+            const o = c.old_price ? c.old_price.toLocaleString('ru-RU') : '—';
+            const n = c.new_price ? c.new_price.toLocaleString('ru-RU') : '—';
+            return `• ${c.title.slice(0,40)}: ${o} → ${n}`;
+          }).join('\n');
+        }
+        if (unavailable.length) {
+          msg += '\n\nНедоступные:\n' + unavailable.map(c =>
+            `• ${c.title.slice(0,40)}: ${c.error}`).join('\n');
+        }
+        alert(msg);
+      } catch (err) {
+        alert('Ошибка: ' + err.message);
+      } finally {
+        btn.disabled = false; btn.textContent = 'Проверить цены';
+        loadFavorites();
+      }
+    });
+
+    let chartTitleEl = document.getElementById('chartTitle');
+    let chartSummaryEl = document.getElementById('chartSummary');
+
+    async function showChart(key) {
+      try {
+        const resp = await fetch(`/api/favorites/${key}/history`);
+        const data = await resp.json();
+        chartTitleEl.textContent = 'Динамика цен: ' + (data.title || '').slice(0, 50);
+        const labels = data.history.map(h => h.checked_at.slice(5, 16));
+        const prices = data.history.map(h => h.price);
+        if (priceChartInstance) priceChartInstance.destroy();
+        const ctx = document.getElementById('priceChart').getContext('2d');
+        priceChartInstance = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [{
+              label: 'Цена (тг)',
+              data: prices,
+              borderColor: '#3b82f6',
+              backgroundColor: 'rgba(59,130,246,.15)',
+              fill: true, tension: 0.3,
+              pointRadius: 5, pointBackgroundColor: '#8b5cf6',
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: {display: false},
+              tooltip: {callbacks: {
+                label: ctx => ctx.parsed.y ? ctx.parsed.y.toLocaleString('ru-RU') + ' тг' : '—'
+              }}
+            },
+            scales: {
+              y: {
+                ticks: {color: '#94a3b8', callback: v => v.toLocaleString('ru-RU') + ' тг'},
+                grid: {color: 'rgba(71,85,105,.3)'}
+              },
+              x: {ticks: {color: '#94a3b8'}, grid: {color: 'rgba(71,85,105,.3)'}}
+            }
+          }
+        });
+        let summary = '';
+        if (data.price_change) {
+          const c = data.price_change;
+          const arrow = c.direction === 'up' ? '↑' : (c.direction === 'down' ? '↓' : '=');
+          summary = `Первая цена: ${c.old_price.toLocaleString('ru-RU')} тг → Текущая: ${c.new_price.toLocaleString('ru-RU')} тг. ` +
+                    `Изменение: ${arrow} ${c.diff > 0 ? '+' : ''}${c.diff.toLocaleString('ru-RU')} (${c.percent}%)`;
+        } else {
+          summary = 'Недостаточно данных для анализа динамики.';
+        }
+        chartSummaryEl.textContent = summary;
+        document.getElementById('chartModal').classList.add('active');
+      } catch (err) {
+        alert('Ошибка загрузки графика: ' + err.message);
+      }
+    }
+
+    function closeChart() {
+      document.getElementById('chartModal').classList.remove('active');
+      if (priceChartInstance) { priceChartInstance.destroy(); priceChartInstance = null; }
+    }
+
+    // === Exchange rates ===
+    let currentRates = null;
+    let ratesTimer = null;
+
+    async function loadRates() {
+      try {
+        const resp = await fetch('/api/rates');
+        const data = await resp.json();
+        currentRates = data;
+        renderRates(data);
+        // If results are already shown, re-render so cards pick up new rates
+        if (currentResults.length) renderResults(currentResults);
+      } catch (err) {
+        console.error('loadRates:', err);
+        document.getElementById('rateUpdated').textContent = 'ошибка загрузки';
+      }
+    }
+
+    function renderRates(data) {
+      document.getElementById('rateRub').textContent = (data.RUB || 0).toFixed(4);
+      document.getElementById('rateUsd').textContent = (data.USD || 0).toFixed(5);
+      let upd = data.updated || '';
+      if (upd && upd.length > 16) upd = upd.slice(5, 16);
+      document.getElementById('rateUpdated').textContent = upd ? 'обновлено: ' + upd : 'обновлено';
+      // Live-update price spans in result cards without full re-render
+      if (currentRates && currentResults.length) {
+        const rub = data.RUB || 0;
+        const usd = data.USD || 0;
+        document.querySelectorAll('.listing-price .price-conv').forEach(el => {
+          const price = parseFloat(el.dataset.price);
+          if (price) {
+            el.textContent = `· ${Math.round(price * rub).toLocaleString('ru-RU')} руб · $${Math.round(price * usd)}`;
+          }
+        });
+      }
+    }
+
+    async function refreshRates() {
+      const btn = document.getElementById('ratesRefreshBtn');
+      btn.disabled = true;
+      try {
+        const resp = await fetch('/api/rates/refresh', {method: 'POST'});
+        const data = await resp.json();
+        currentRates = data;
+        renderRates(data);
+        // Re-render cards with fresh rates
+        if (currentResults.length) renderResults(currentResults);
+        loadFavorites();
+      } catch (err) {
+        console.error('refreshRates:', err);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    // === Init ===
+    markActiveTheme();
+    // Sync settings from server (source of truth across restarts)
+    fetch('/api/settings').then(r => r.json()).then(s => {
+      if (s.theme) applyThemeLocal(s.theme);
+      const cb = document.getElementById('hideNoPhoto');
+      if (cb) cb.checked = !!s.hide_no_photo;
+      parserMaxPages = s.parser_max_pages || {};
+      renderParserMaxPages();
+    }).catch(() => {});
+    loadSearchDefaults();
+    loadRates();
+    // Auto-refresh rates every 10 minutes
+    if (ratesTimer) clearInterval(ratesTimer);
+    ratesTimer = setInterval(loadRates, 600000);
+    loadDistricts().then(() => {
+      loadHeatmap('all');
+      // Load cached results after districts (needed for map markers)
+      loadCachedResults();
+    });
+    loadFavorites();
+
+    async function loadCachedResults() {
+      try {
+        const resp = await fetch('/api/results');
+        const data = await resp.json();
+        const res = data.results || [];
+        currentResults = res;
+        applyClientFilters();
+      } catch (err) {
+        console.error('loadCachedResults:', err);
+      }
+    }
+  </script>
+</body>
+</html>
