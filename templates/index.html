@@ -100,12 +100,14 @@
       backdrop-filter: blur(10px);
     }
     header h1 {
-      font-size: 1.5rem;
+      font-size: 6rem;
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      line-height: 1.1;
     }
-    header p { color: var(--text-dim); font-size: .85rem; margin-top: 4px; }
+    @media (max-width: 1200px) { header h1 { font-size: 4rem; } }
+    @media (max-width: 768px) { header h1 { font-size: 2.5rem; } }
     /* Layout */
     .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
     .grid-layout { display: grid; grid-template-columns: 340px 1fr; gap: 20px; }
@@ -471,10 +473,9 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>ДомАлматы — Поиск аренды жилья</h1>
-    <p>{{ sites|length }} сайтов недвижимости Алматы в одном поиске с интерактивной тепловой картой цен</p>
-  </header>
+   <header>
+     <h1>ДомАлматы — Поиск аренды жилья: {{ sites|length }} сайтов недвижимости Алматы в одном поиске с интерактивной тепловой картой цен</h1>
+   </header>
 
   <div class="container">
     <div class="grid-layout">
