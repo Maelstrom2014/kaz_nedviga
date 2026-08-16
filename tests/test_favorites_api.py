@@ -318,7 +318,8 @@ class TestApiCheckPrices:
         assert r["changed"] is False
 
     def test_check_prices_olx_unavailable_not_parsed(self, client):
-        """When OLX returns the 'недоступно' page, parse() must NOT be called."""
+        """When OLX returns the 'недоступно' page, extract_detail_price
+        must NOT be called."""
         from db import check_prices
         from parsers.olx import OlxParser
 
@@ -330,7 +331,31 @@ class TestApiCheckPrices:
         parser = OlxParser()
         with patch.object(parser, "fetch",
                           return_value="<html>Объявление больше не доступно</html>"):
-            with patch.object(parser, "parse") as mock_parse, \
+            with patch.object(parser, "extract_detail_price") as mock_extract, \
                  patch("parsers.factory.get_all_parsers", return_value=[parser]):
                 check_prices()
+        mock_extract.assert_not_called()
+
+    def test_check_prices_extracts_price_from_detail_page(self, client):
+        """check_prices uses extract_detail_price(), not parse() — the detail
+        page has a different structure than search cards."""
+        from db import check_prices
+        from parsers.krisha import KrishaParser
+
+        db.add_favorite({
+            **SAMPLE,
+            "url": "https://krisha.kz/a/show/123456",
+            "source": "krisha.kz",
+        })
+        parser = KrishaParser()
+        detail_html = '<html><script id="jsdata">{"price":260000}</script></html>'
+        with patch.object(parser, "fetch", return_value=detail_html), \
+             patch.object(parser, "extract_detail_price", return_value=(260000, None, None)) as mock_extract, \
+             patch.object(parser, "parse") as mock_parse, \
+             patch("parsers.factory.get_all_parsers", return_value=[parser]):
+            results = check_prices()
+        assert len(results) == 1
+        assert results[0]["new_price"] == 260000
+        assert results[0]["changed"] is True  # 250000 -> 260000
+        mock_extract.assert_called_once()
         mock_parse.assert_not_called()

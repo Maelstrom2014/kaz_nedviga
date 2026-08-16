@@ -330,27 +330,22 @@ def check_prices() -> list[dict]:
             if source == "olx.kz" and "больше не доступно" in html.lower():
                 updated.append(_entry(fav, None, False, "объявление больше не доступно"))
                 continue
-            results = parser.parse(html, SearchParams())
-            fav_base = url.split("?")[0].rstrip("/")
-            listing = None
-            for r in results:
-                if not r.url:
-                    continue
-                r_base = r.url.split("?")[0].rstrip("/")
-                if r_base == fav_base or fav_base in r_base or r_base in fav_base:
-                    listing = r
-                    break
-            if listing is None or listing.price is None:
+            # Detail pages have a different structure than search card pages.
+            # Use extract_detail_price() which each parser overrides with
+            # site-specific detail selectors (krisha: jsdata JSON, kn: JSON-LD,
+            # etagi: embedded state, olx: [data-testid=ad-price]).
+            price, lat, lon = parser.extract_detail_price(html, url)
+            if price is None:
                 updated.append(_entry(fav, None, False, "объявление не найдено на странице"))
                 continue
-            if listing.price != fav["price"]:
-                update_price(fav["listing_key"], listing.price, listing.currency)
+            if price != fav["price"]:
+                update_price(fav["listing_key"], price, fav.get("currency", "тг"))
             # Update coordinates if the parser enriched them (e.g. kn.kz
             # fetches the /card/map/{ID} turbo-frame, olx extracts from
             # JSON state). This keeps favorites' map markers accurate.
-            if listing.lat is not None and listing.lon is not None:
-                update_coords(fav["listing_key"], listing.lat, listing.lon)
-            updated.append(_entry(fav, listing.price, listing.price != fav["price"]))
+            if lat is not None and lon is not None:
+                update_coords(fav["listing_key"], lat, lon)
+            updated.append(_entry(fav, price, price != fav["price"]))
         except Exception as exc:
             updated.append(_entry(fav, None, False, str(exc)[:200]))
         # Be polite: no burst of requests to the same site.

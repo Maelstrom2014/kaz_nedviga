@@ -38,6 +38,22 @@ class KrishaParser(BaseParser):
             url += f"&page={page}"
         return url
 
+    def extract_detail_price(self, html: str, url: str) -> tuple:
+        """Krisha detail pages embed listing data in a ``<script id="jsdata">``
+        JSON blob. Price is at ``"price":650000``."""
+        m = re.search(r'"price"\s*:\s*(\d+)', html)
+        price = int(m.group(1)) if m else None
+        lat, lon = None, None
+        m = re.search(r'"map"\s*:\s*\{[^}]*"lat"\s*:\s*([\d.]+)[^}]*"lon"\s*:\s*([\d.]+)', html)
+        if m:
+            try:
+                lat, lon = float(m.group(1)), float(m.group(2))
+            except (ValueError, TypeError):
+                pass
+        if price is None:
+            return super().extract_detail_price(html, url)
+        return (price, lat, lon)
+
     def _parse_soup(self, soup: BeautifulSoup, params: SearchParams) -> list[Listing]:
         listings: list[Listing] = []
         for card in soup.select("div.a-card"):

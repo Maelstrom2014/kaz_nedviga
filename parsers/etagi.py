@@ -62,6 +62,45 @@ class EtagiParser(BaseParser):
         # just re-fetches the same batch, which dedupe collapses.
         return self._build_url_base(params)
 
+    def extract_detail_price(self, html: str, url: str) -> tuple:
+        """Etagi detail pages embed the full listing data in ``var data={...}``.
+        The state parser already handles this; reuse it and find the ticket
+        ID from the URL to match the right listing."""
+        m = self._STATE_RE.search(html)
+        if not m:
+            return super().extract_detail_price(html, url)
+        try:
+            data = json.loads(self._balanced_json(m.group(1)))
+        except (ValueError, RecursionError):
+            return super().extract_detail_price(html, url)
+        # Detail page state: the listing itself is at top level (not in lists.rents)
+        price = data.get("price")
+        try:
+            price = int(price) if price is not None else None
+        except (TypeError, ValueError):
+            price = None
+        lat, lon = None, None
+        la, lo = data.get("la"), data.get("lo")
+        try:
+            lat = float(la) if la not in (None, "") else None
+        except (TypeError, ValueError):
+            pass
+        try:
+            lon = float(lo) if lo not in (None, "") else None
+        except (TypeError, ValueError):
+            pass
+        if price is None:
+            # Try lists.rents (detail page sometimes includes the full state)
+            rents = ((data.get("lists") or {}).get("rents")) or []
+            for item in rents:
+                if isinstance(item, dict):
+                    listing = self._rent_to_listing(item)
+                    if listing and listing.price is not None:
+                        if url.rstrip("/").endswith(str(item.get("_ticket_id", ""))):
+                            return (listing.price, listing.lat, listing.lon)
+            return super().extract_detail_price(html, url)
+        return (price, lat, lon)
+
     def parse(self, html: str, params: SearchParams) -> list[Listing]:
         """Prefer the embedded JSON state (~30 full listings); fall back
         to SSR card parsing when the state blob is missing or broken."""

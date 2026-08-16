@@ -530,6 +530,27 @@ class BaseParser:
     def _parse_soup(self, soup: BeautifulSoup, params: SearchParams) -> list[Listing]:
         raise NotImplementedError
 
+    def extract_detail_price(self, html: str, url: str) -> tuple:
+        """Extract (price, lat, lon) from a detail page.
+
+        Default fallback: run the search parser and look for a listing
+        whose URL matches. Parsers whose detail page structure differs
+        from search cards override this with site-specific selectors.
+        Returns (None, None, None) when the price can't be extracted.
+        """
+        try:
+            results = self.parse(html, SearchParams())
+        except Exception:
+            return (None, None, None)
+        fav_base = url.split("?")[0].rstrip("/")
+        for r in results:
+            if not r.url:
+                continue
+            r_base = r.url.split("?")[0].rstrip("/")
+            if r_base == fav_base or fav_base in r_base or r_base in fav_base:
+                return (r.price, r.lat, r.lon)
+        return (None, None, None)
+
     # ---- Filtering ----------------------------------------------------
     def filter_listing(self, listing: Listing, params: SearchParams) -> bool:
         if not params.matches_price(listing.price):

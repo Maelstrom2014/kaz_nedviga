@@ -31,6 +31,32 @@ class KnParser(BaseParser):
         qs = ("?" + "&".join(parts)) if parts else ""
         return f"{self.base_url}{self.search_path}{qs}"
 
+    def extract_detail_price(self, html: str, url: str) -> tuple:
+        """kn.kz detail pages carry schema.org JSON-LD with the price.
+        Coordinates are in the /card/map/{ID} turbo-frame (see
+        _extract_map_coords), but here we only need the price."""
+        soup = BeautifulSoup(html, "html.parser")
+        price = None
+        for script in soup.select("script[type='application/ld+json']"):
+            try:
+                import json
+                data = json.loads(script.string or "")
+                offers = data.get("offers") or {}
+                p = offers.get("price")
+                if p is not None:
+                    price = int(p)
+                    break
+            except (ValueError, TypeError):
+                continue
+        if price is None:
+            # Fallback: visible price div
+            el = soup.select_one("div.kn-fs-26")
+            if el:
+                price = parse_int(el.get_text(" "))
+        if price is None:
+            return super().extract_detail_price(html, url)
+        return (price, None, None)
+
     def _parse_soup(self, soup: BeautifulSoup, params: SearchParams) -> list[Listing]:
         listings: list[Listing] = []
         seen_cards: set[int] = set()
