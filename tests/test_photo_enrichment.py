@@ -1,4 +1,4 @@
-"""Tests for detail-page photo enrichment."""
+﻿"""Tests for detail-page photo enrichment."""
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -75,7 +75,8 @@ class TestKnDetailPhotos:
     def test_fetch_detail_photos_returns_multiple(self):
         parser = KnParser()
         listing = Listing(url="https://www.kn.kz/card/123", source="kn.kz")
-        with patch.object(parser, "fetch", return_value=load_fixture("kn_detail")):
+        with patch.object(parser, "fetch_session",
+                          return_value=(MagicMock(), load_fixture("kn_detail"))):
             photos = parser._fetch_detail_photos(listing)
         assert len(photos) == 3
         assert all("gallery_big" in p for p in photos)
@@ -83,8 +84,9 @@ class TestKnDetailPhotos:
     def test_fetch_detail_extracts_map_coordinates(self):
         parser = KnParser()
         listing = Listing(url="https://www.kn.kz/card/123456", source="kn.kz")
-        seq = iter([load_fixture("kn_detail"), load_fixture("kn_map")])
-        with patch.object(parser, "fetch", side_effect=lambda url: next(seq)):
+        with patch.object(parser, "fetch_session",
+                          return_value=(MagicMock(), load_fixture("kn_detail"))), \
+             patch.object(parser, "fetch", return_value=load_fixture("kn_map")):
             parser._fetch_detail_photos(listing)
         assert listing.lat == 43.292631460374
         assert listing.lon == 77.014389068787
@@ -93,7 +95,8 @@ class TestKnDetailPhotos:
         parser = KnParser()
         listing = Listing(url="https://www.kn.kz/card/123", source="kn.kz")
         # No turbo-frame in the detail page
-        with patch.object(parser, "fetch", return_value="<html><body>no map</body></html>"):
+        with patch.object(parser, "fetch_session",
+                          return_value=(MagicMock(), "<html><body>no map</body></html>")):
             parser._fetch_detail_photos(listing)
         assert listing.lat is None
         assert listing.lon is None
@@ -103,8 +106,10 @@ class TestKnDetailPhotos:
         listing = Listing(url="https://www.kn.kz/card/123", source="kn.kz")
         # Coords for Astana (51.1, 71.4) — must be rejected
         map_html = '<turbo-stream><template><div data-controller="kn-simple-map" data-kn-simple-map-latitude-value="51.121869" data-kn-simple-map-longitude-value="71.498625"></div></template></turbo-stream>'
-        seq = iter(["<html><body><turbo-frame id='card-map-123' src='/card/map/123'>load</turbo-frame></body></html>", map_html])
-        with patch.object(parser, "fetch", side_effect=lambda url: next(seq)):
+        detail = "<html><body><turbo-frame id='card-map-123' src='/card/map/123'>load</turbo-frame></body></html>"
+        with patch.object(parser, "fetch_session",
+                          return_value=(MagicMock(), detail)), \
+             patch.object(parser, "fetch", return_value=map_html):
             parser._fetch_detail_photos(listing)
         assert listing.lat is None
         assert listing.lon is None
@@ -205,9 +210,6 @@ class TestEnrichDisabled:
         from parsers.etagi import EtagiParser
         assert EtagiParser.enrich_photo_count > 0
 
-    def test_kvartirka_no_enrich(self):
-        from parsers.kvartirka import KvartirkaParser
-        assert KvartirkaParser.enrich_photo_count == 0
 
     def test_krisha_enrich_enabled(self):
         assert KrishaParser.enrich_photo_count > 0

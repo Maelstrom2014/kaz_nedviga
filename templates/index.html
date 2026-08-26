@@ -266,6 +266,34 @@
       text-decoration: none; font-size: .85rem; font-weight: 600;
     }
     .listing-link:hover { text-decoration: underline; }
+    .listing-phone { margin-top: 6px; font-size: .85rem; color: var(--text-dim); }
+    .listing-phone a {
+      color: var(--accent); font-weight: 600; text-decoration: none;
+    }
+    .listing-phone a:hover { text-decoration: underline; }
+    .phone-repeat { color: var(--accent); font-weight: 700; margin-left: 4px; }
+    .card-focused { outline: 3px solid var(--accent); outline-offset: 2px; }
+    .district-label { pointer-events: none; }
+    #searchTab.map-right.active {
+      display: grid; grid-template-columns: minmax(0, 1fr) minmax(560px, 1.15fr); gap: 20px; align-items: start;
+    }
+    #searchTab.map-right .map-section {
+      grid-column: 2; grid-row: 1 / -1; position: sticky; top: 20px; align-self: start;
+      display: flex; flex-direction: column; height: calc(100vh - 40px);
+    }
+    #searchTab.map-right .results-header,
+    #searchTab.map-right .results-grid { grid-column: 1; }
+    #searchTab.map-right #map { flex: 1; height: auto; min-height: 400px; }
+    #searchTab.map-right .results-grid { grid-column: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    @media (max-width: 1400px) {
+      #searchTab.map-right.active { grid-template-columns: 1fr; padding-right: 0; }
+      #searchTab.map-right .map-section {
+        grid-column: 1; grid-row: auto; position: static; max-height: none;
+      }
+      #searchTab.map-right .results-header,
+      #searchTab.map-right .results-grid { grid-column: 1; }
+      #searchTab.map-right #map { height: 500px; }
+    }
     /* Loading */
     .loading-overlay {
       position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -533,7 +561,7 @@
         </div>
 
         <!-- Tab: Search -->
-        <div class="tab-content active" id="searchTab">
+        <div class="tab-content active map-right" id="searchTab">
         <!-- Map with heatmap -->
         <div class="map-section">
           <div class="map-header">
@@ -693,6 +721,10 @@
               <h3 style="font-size:1rem;margin:28px 0 12px;">Страницы по сайтам</h3>
               <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Сколько страниц поиска парсить с каждого сайта. Сохраняется на сервере. Поле «страниц на сайт» в форме поиска задаёт единое число для всех — здесь можно настроить каждый сайт отдельно.</p>
               <div id="parserMaxPagesGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;"></div>
+              <div style="margin-top:18px;">
+                <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><input type="checkbox" id="olxPhonePageOnly" onchange="setOlxPhonePageOnly(this.checked)" style="width:16px;height:16px;cursor:pointer;"> Парсить телефоны OLX через страницу объявления</label>
+                <label style="display:flex;align-items:center;gap:8px;"><input type="checkbox" id="olxPhonePlaywright" onchange="setOlxPhonePlaywright(this.checked)" style="width:16px;height:16px;cursor:pointer;"> Использовать Playwright для телефонов OLX</label>
+              </div>
 
               <h3 style="font-size:1rem;margin:28px 0 12px;">Цветовая тема</h3>
               <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Тема сохраняется на сервере и применяется при следующем запуске.</p>
@@ -1353,6 +1385,7 @@
                 ${floorStr ? `<span class="card-chip">${escapeHtml(floorStr)}</span>` : ''}
               </div>
               ${r.address ? `<div style="font-size:.8rem;color:var(--text-dim);margin-top:6px;">${escapeHtml(r.address)}</div>` : ''}
+              ${r.phone ? `<div class="listing-phone">Тел: <a href="tel:${r.phone.replace(/[^\d+]/g, '')}">${escapeHtml(r.phone)}</a></div>` : ''}
               ${descPreview ? `<div class="desc-preview">${descPreview}</div>` : ''}
               ${(r.date_published || r.date_updated) ? `<div class="date-line">${r.date_published ? `<span>Опубликовано: ${r.date_published}</span>` : ''}${r.date_updated ? `<span>Обновлено: ${r.date_updated}</span>` : ''}</div>` : ''}
               <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
@@ -1773,7 +1806,24 @@
           body: JSON.stringify({hide_no_photo: v})
         });
       } catch (err) {
-        console.error('setHideNoPhoto:', err);
+      }
+    }
+    async function setOlxPhonePageOnly(v) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({olx_phone_page_only: v})
+        });
+      } catch (err) {
+      }
+    }
+    async function setOlxPhonePlaywright(v) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({olx_phone_playwright: v})
+        });
+      } catch (err) {
       }
     }
 
@@ -2016,6 +2066,7 @@
               <div class="fav-card-price">${f.price_str}</div>
       <div style="font-size:.75rem;color:var(--text-dim);margin-top:2px;">${f.price && f.price_rub != null ? f.price_rub.toLocaleString('ru-RU', {maximumFractionDigits:0}) + ' руб · $' + (f.price_usd || 0).toFixed(0) : ''}</div>
               <div class="fav-card-meta">${escapeHtml(f.address || '—')} · ${f.source}</div>
+              ${f.phone ? `<div class="listing-phone">Тел: <a href="tel:${f.phone.replace(/[^\d+]/g, '')}">${escapeHtml(f.phone)}</a></div>` : ''}
               ${(f.date_published || f.date_updated) ? `<div class="date-line">${f.date_published ? `<span>Опубликовано: ${f.date_published}</span>` : ''}${f.date_updated ? `<span>Обновлено: ${f.date_updated}</span>` : ''}</div>` : ''}
               <div class="fav-info-row">
                 <div class="stars" data-key="${f.listing_key}">${stars}</div>
@@ -2218,6 +2269,10 @@
       if (s.theme) applyThemeLocal(s.theme);
       const cb = document.getElementById('hideNoPhoto');
       if (cb) cb.checked = !!s.hide_no_photo;
+      const cbP1 = document.getElementById('olxPhonePageOnly');
+      if (cbP1) cbP1.checked = !!s.olx_phone_page_only;
+      const cbP2 = document.getElementById('olxPhonePlaywright');
+      if (cbP2) cbP2.checked = !!s.olx_phone_playwright;
       parserMaxPages = s.parser_max_pages || {};
       renderParserMaxPages();
     }).catch(() => {});

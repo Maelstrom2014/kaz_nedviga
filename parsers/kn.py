@@ -19,6 +19,9 @@ class KnParser(BaseParser):
     # Enrich every listing with the detail-page swiper gallery (the search
     # card only shows the first photo).
     enrich_photo_count = 1000
+    # kn.kz footer advertises its own 0800 hotline (tel:77000877877 =
+    # +7 700 087 78 77). It must never surface as the advertiser's phone.
+    phone_blacklist = frozenset({"+77000877877"})
 
     def _build_url_base(self, params: SearchParams) -> str:
         parts: list[str] = []
@@ -189,10 +192,19 @@ class KnParser(BaseParser):
         attributes carrying the exact pin coordinates.
         """
         try:
-            html = self.fetch(listing.url)
+            # fetch_session: the phone endpoint below only answers for the
+            # session that loaded the detail page (cookie + Referer).
+            session, html = self.fetch_session(listing.url)
             soup = self.parse_html(html)
         except Exception:
             return []
+
+        # The page source only has the site's 0800 hotline (blacklisted)
+        # and a masked preview like "+7 701 " — the real number is served
+        # from /card/phone/{ID}/{n} when the button is clicked. The base
+        # class discovers that endpoint from the page and fetches it with
+        # this session.
+        self._enrich_phone(listing, html, session)
 
         # Extract photos
         photos: list[str] = []

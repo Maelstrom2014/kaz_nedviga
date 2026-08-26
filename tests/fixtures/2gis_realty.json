@@ -1,0 +1,93 @@
+{
+  "meta": {"code": 200, "api_version": "5.1.0"},
+  "result": {
+    "total": 4,
+    "items": [
+      {
+        "id": "918273",
+        "title": "2-комнатная квартира, ЖК Алма Сити 4",
+        "description": "Сдаётся 2-комн квартира, 55 м², 7/12 этаж. 250 000 тг/месяц. Депозит 50 000, возвратный. Коммуналки 5–6 тыс отдельно. Без посредников. Заселение с 1 сентября. Телефон +7 707 123 45 67. https://wa.me/77071234567",
+        "address": "Алматы, мкр Аксай-3, ул. Саина 92",
+        "ads": [{"price": {"value": 250000, "currency": "KZT"}}],
+        "geometry": {"centroid": {"lat": 43.2389, "lon": 76.8820}},
+        "building_id": "b-almacity-4",
+        "provider": "Этажи",
+        "org_id": "org-etagi-1",
+        "branch_id": "etagi-almaty",
+        "rental_period": "long_term",
+        "date_created": "2026-08-16T09:12:00",
+        "views": 142,
+        "url": "https://2gis.kz/almaty/firm/ad-918273",
+        "photos": [
+          {"url": "https://files.2gis.kz/photo/1.jpg"},
+          {"url": "https://files.2gis.kz/photo/2.jpg"},
+          {"url": "https://tile0.maps.2gis.com/tile.jpg"}
+        ],
+        "rooms": 2,
+        "area": 55,
+        "floor": 7,
+        "floors_total": 12
+      },
+      {
+        "id": "552201",
+        "title": "Комната, подселение, девушка",
+        "description": "Ищем девушку на подселение. 70 000 с человека + коммунальные. Жить вдвоём. 8 (707) 222 33 44. возьму девушку",
+        "ads": [{"price": {"value": 70000, "currency": "KZT"}}],
+        "geometry": {"centroid": {"lat": 43.2550, "lon": 76.9290}},
+        "building_id": "b-center-1",
+        "address": "Алматы, ул. Тole би 100",
+        "provider": null,
+        "rental_period": "monthly",
+        "date_created": "2026-08-16T11:30:00",
+        "url": "https://2gis.kz/almaty/firm/ad-552201",
+        "photos": [],
+        "rooms": 1,
+        "floor": 3,
+        "floors_total": 5
+      },
+      {
+        "id": "777999",
+        "title": "Срочная продажа - не оффер",
+        "description": "Ищу квартиру срочно. Сниму 2-комнатную. Куплю тоже рассмотрю.",
+        "ads": [{"price": {"value": 0, "currency": "KZT"}}],
+        "url": "https://2gis.kz/almaty/firm/ad-777999",
+        "photos": []
+      },
+      {
+        "id": "888000",
+        "title": "Квартира посуточно",
+        "description": "Сдаётся квартира посуточно. 15 000 за сутки. 8 701 555 12 34.",
+        "ads": [{"price": {"value": 15000, "currency": "KZT"}}],
+        "rental_period": "daily",
+        "url": "https://2gis.kz/almaty/firm/ad-888000",
+        "photos": []
+      },
+      {
+        "id": "661234",
+        "title": "2-комн квартира, ЖК Алма Сити 4 (дубль)",
+        "description": "Сдам 2-комн квартиру, 55 м², 7 этаж. 250 000 тг. Депозит 50 000. Без посредников. +7 707 123 45 67 wa.me/77071234567",
+        "ads": [{"price": {"value": 250000, "currency": "KZT"}}],
+        "geometry": {"centroid": {"lat": 43.2389, "lon": 76.8820}},
+        "building_id": "b-almacity-4",
+        "address": "Алматы, мкр Аксай-3, ул. Саина 92",
+        "rental_period": "long_term",
+        "date_created": "2026-08-16T13:47:00",
+        "url": "https://2gis.kz/almaty/firm/ad-661234",
+        "provider": "Этажи",
+        "org_id": "org-etagi-1",
+        "rooms": 2,
+        "area": 55.0,
+        "floor": 7,
+        "floors_total": 12
+      }
+    ],
+    "categories": {
+      "id": "70241201812768719", "label": "Аренда жилой недвижимости",
+      "count": 3, "is_selected": true
+    },
+    "filters": {"ads": [], "main": [], "quick": []},
+    "bss": {},
+    "list_info": {},
+    "dicts": {"currencies": [{"code": "KZT", "name": "тенге", "symbol": "₸"}]}
+  }
+}

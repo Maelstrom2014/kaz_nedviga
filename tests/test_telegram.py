@@ -1,4 +1,5 @@
 """Tests for the Telegram channel parser."""
+import pytest
 from unittest.mock import patch
 
 from parsers.models import SearchParams
@@ -91,9 +92,10 @@ def test_address_extracted():
 def test_phone_extracted():
     results = _parse()
     apt1 = next(r for r in results if "2-ком" in r.title)
-    assert "7705" in apt1.phone.replace(" ", "")
+    # Phone is normalized to +7XXXXXXXXXX (2do §7.1; source §14).
+    assert apt1.phone == "+77052110891", apt1.phone
     apt2 = next(r for r in results if "1-комнатная" in r.title)
-    assert "87059008676" in apt2.phone.replace(" ", "")
+    assert apt2.phone == "+77059008676", apt2.phone
 
 
 def test_date_extracted():
@@ -265,3 +267,278 @@ def test_listing_translates_kazakh_title_and_description():
     assert "сдаётся" in listing.title or "комнатная" in listing.title
     assert "без депозита" in listing.description
     assert "комнатная" in listing.description
+
+
+# ===========================================================================
+# Tests for the task_telega_chatgpt.md recommendations (2do doc).
+# All deterministic — no OCR, no LLM.
+# ===========================================================================
+from parsers.telegram import (
+    _classify_listing_type,
+    _extract_costs,
+    _extract_2gis,
+    _extract_available_from,
+    _extract_landmark,
+    _extract_residential_complex,
+    _extract_whatsapp,
+    _extract_telegram,
+    compute_freshness_score,
+    compute_quality_score,
+    _owner_agent_prob,
+    _TIERED_CHANNELS,
+    _KZ_RU_GLOSS,
+    _GLOSS_KEYS,
+)
+
+from parsers.base import normalize_phone, property_fingerprint
+
+
+# ---- Tiered channels (2do §1.4 / §15.2; source §18) -----------------------
+def test_channels_are_tiered():
+    assert len(_TIERED_CHANNELS) >= 8
+    tiers = {c.tier for c in _TIERED_CHANNELS}
+    assert {"A", "B", "C"} <= tiers
+    # Tier A channels have deeper pagination.
+    for ch in _TIERED_CHANNELS:
+        if ch.tier == "A":
+            assert ch.before_batches >= 1
+
+
+def test_channels_flat_tuple_backward_compat():
+    # Existing tests index _CHANNELS[i]; structure must expose the flat list.
+    assert _CHANNELS[0] == _TIERED_CHANNELS[0].name
+    assert len(_CHANNELS) == len(_TIERED_CHANNELS)
+
+
+# ---- listing_type classification (2do §4.2; source §6) --------------------
+@pytest.mark.parametrize("text,expected", [
+    ("Ищу 2-комн квартиру", "WANTED"),
+    ("Квартира посуточно 15000", "SHORT_TERM"),
+    ("Ищем девушку на подселение", "ROOMMATE"),
+    ("Сдаю комнату в квартире", "SUBLET"),
+    ("возьму девушку на подселение", "ROOMMATE"),
+    ("подселениеге қыз керек", "ROOMMATE"),
+    ("Сдаётся 2-комнатная квартира", "WHOLE_APARTMENT"),
+    ("Сдаётся частный дом", "HOUSE"),
+    ("комната в общежитии", "PRIVATE_ROOM"),
+    ("какой-то текст", "UNKNOWN"),
+])
+def test_classify_listing_type(text, expected):
+    assert _classify_listing_type(text) == expected
+
+
+def test_listing_type_set_on_parsed_listings():
+    results = _parse()
+    apt1 = next(r for r in results if "2-ком" in r.title)
+    assert apt1.listing_type == "WHOLE_APARTMENT"
+    assert apt1.deal_type == "long_term"
+
+
+# ---- Context-aware costs (2do §5; source §7/§8/§9) -----------------------
+def test_costs_deposit_commission_utilities_split():
+    text = ("Сдаётся 2-комн. 250 000 тг/мес. "
+            "Депозит 50 000 возвратный. Комиссия 30%. "
+            "Коммунальные 5–6 тыс отдельно.")
+    c = _extract_costs(text)
+    assert c["deposit"] == 50000
+    assert c["deposit_refundable"] is True
+    assert c["commission_percent"] == 30
+    assert c["utilities"] == "separate"
+    assert c["utilities_min"] == 5000
+    assert c["utilities_max"] == 6000
+
+
+def test_costs_first_payment_vs_rent():
+    c = _extract_costs("первый платёж 120 000, дальше 80 000 тг/мес")
+    assert c["first_payment"] == 120000
+
+
+def test_costs_included_overrides():
+    c = _extract_costs("аренда 200000, всё включено")
+    assert c["utilities"] == "included"
+
+
+def test_costs_per_person():
+    c = _extract_costs("Ищем девушку на подселение. 70000 за человека")
+    assert c["price_per_person"] is True
+
+
+def test_costs_deposit_not_equal_rent_in_listing():
+    # "180к депозит" — the rent is 180000 (via _extract_price); deposit
+    # trailing must not be recorded as equal to rent (2do §5.3).
+    parser = TelegramParser()
+    listing = parser._build_listing(
+        "аренда 180к депозит", "https://t.me/x/1", "2025-11-11T10:00:00+00:00", [])
+    assert listing.price == 180000
+    assert listing.deposit is None  # equal to rent → suppressed
+
+
+# ---- Phone normalization (2do §7.1; source §14) --------------------------
+@pytest.mark.parametrize("raw,expected", [
+    ("87071234567", "+77071234567"),
+    ("+7 707 123 45 67", "+77071234567"),
+    ("8 (707) 123-45-67", "+77071234567"),
+    ("wa.me/77071234567", "+77071234567"),
+    ("нет телефона", ""),
+])
+def test_normalize_phone(raw, expected):
+    assert normalize_phone(raw) == expected
+
+
+def test_whatsapp_extracted_from_text():
+    assert _extract_whatsapp("звоните wa.me/77071234567") == "+77071234567"
+    assert _extract_whatsapp("нет whatsapp") == ""
+
+
+def test_telegram_handle_extracted():
+    assert _extract_telegram("пишите @username") == "username"
+    assert _extract_telegram("нет handle") == ""
+
+
+# ---- 2GIS link parsing (2do §6.3; source §11) ----------------------------
+def test_extract_2gis_geo_link():
+    gis = _extract_2gis("квартира https://2gis.kz/almaty/geo/123?m=43.2,76.9")
+    assert gis["url"].startswith("https://2gis.kz/")
+    assert gis["lat"] == 43.2
+    assert gis["lon"] == 76.9
+
+
+def test_extract_2gis_firm_link():
+    gis = _extract_2gis("офис https://2gis.kz/almaty/firm/98765")
+    assert gis["object_id"] == "98765"
+
+
+def test_extract_2gis_none():
+    assert _extract_2gis("нет ссылки") == {}
+
+
+# ---- Location / ЖК / landmark (2do §6; source §10) -----------------------
+def test_extract_residential_complex():
+    assert _extract_residential_complex("квартира в ЖК Алма Сити 4") == "Алма Сити 4"
+
+
+def test_extract_landmark():
+    lm = _extract_landmark("возле Сайрана")
+    assert "Сайран" in lm
+
+
+def test_extract_available_from():
+    assert _extract_available_from("заселение с 1 сентября") == "1 сентября"
+    assert _extract_available_from("срочно") == "срочно/сегодня"
+    assert _extract_available_from("нет даты") == ""
+
+
+# ---- Owner/agent probability (2do §11/§22) -------------------------------
+def test_owner_agent_owner_signals():
+    owner, agent = _owner_agent_prob("я собственник, без посредников")
+    assert owner > 0.7 and agent < 0.3
+
+
+def test_owner_agent_agent_signals():
+    owner, agent = _owner_agent_prob("комиссия 30% риелтор")
+    assert owner < 0.4 and agent > 0.6
+
+
+# ---- Freshness + quality scores (2do §8/§12) -----------------------------
+def test_freshness_recent():
+    from datetime import datetime
+    assert compute_freshness_score(datetime.now().isoformat()) == 1.0
+    assert compute_freshness_score("2020-01-01") == 0.10
+    assert compute_freshness_score("") == 0.0
+
+
+def test_quality_score_computed_on_listing():
+    results = _parse()
+    for r in results:
+        assert r.quality_score is not None and 0 < r.quality_score <= 100
+        assert r.freshness_score is not None and 0.0 < r.freshness_score <= 1.0
+
+
+# ---- Views capture (2do §16; source §24 Phase 1) --------------------------
+def test_views_captured():
+    results = _parse()
+    apt1 = next(r for r in results if "2-ком" in r.title)
+    assert apt1.views == 484
+    apt2 = next(r for r in results if "1-комнатная" in r.title)
+    assert apt2.views == 798
+
+
+# ---- Cross-channel fingerprint dedup with master (2do §9; source §15/§16) -
+def test_fingerprint_dedup_merges_same_listing_across_channels():
+    parser = TelegramParser()
+    # Two copies of the same ad (same phone/price/rooms/area) from different
+    # channels → one master with sources_count == 2 (source §16).
+    l1 = parser._build_listing(
+        "Сдаётся 2-комн. 250000 тг. +7 707 123 45 67. ЖК Алма Сити.",
+        "https://t.me/chA/100", "2025-11-11T09:00:00+00:00", [])
+    l2 = parser._build_listing(
+        "Сдам 2-комн квартиру. 250000 тг. 87071234567. ЖК Алма Сити.",
+        "https://t.me/chB/200", "2025-11-11T13:00:00+00:00", [])
+    listings = [l1, l2]
+    parser._fingerprint_dedup_inplace(listings)
+    # Same fingerprint (normalized phone, same price/rooms) → 1 master.
+    assert len(listings) == 1
+    assert listings[0].sources_count == 2
+
+
+def test_fingerprint_dedup_keeps_distinct():
+    parser = TelegramParser()
+    l1 = parser._build_listing(
+        "Сдаётся 1-комн. 150000 тг. мкр Аксай.",
+        "https://t.me/chA/100", "2025-11-11T09:00:00+00:00", [])
+    l2 = parser._build_listing(
+        "Сдаётся 3-комн. 350000 тг. ЖК Мегаполис.",
+        "https://t.me/chB/200", "2025-11-11T13:00:00+00:00", [])
+    listings = [l1, l2]
+    parser._fingerprint_dedup_inplace(listings)
+    assert len(listings) == 2
+
+
+def test_run_cross_channel_master_count():
+    # test_run_partial_failure_keeps_results contract: same fixture from
+    # two channels → 2 distinct listings (not 4), each master may have
+    # sources_count ≥ 1.
+    parser = TelegramParser()
+
+    def fake_fetch(url):
+        if _CHANNELS[0] in url and "before=" not in url:
+            return load_fixture("telegram")
+        if _CHANNELS[1] in url and "before=" not in url:
+            return load_fixture("telegram")
+        raise ConnectionError("blocked")
+
+    with patch.object(parser, "fetch", side_effect=fake_fetch), \
+         patch.object(parser, "_extract_before", return_value=None):
+        results = parser.run(SearchParams())
+    assert len(results) == 2  # URL dedup + fuzzy dedup → 2 masters
+
+
+# ---- listing_id_alt / provenance (2do §3.2) --------------------------------
+def test_listing_id_alt_extracted():
+    results = _parse()
+    apt1 = next(r for r in results if "2-ком" in r.title)
+    # URL = t.me/kvartiry_almaty/368 → msg id 368.
+    assert apt1.listing_id_alt == "368"
+
+
+# ---- rent_per_m2 computed (2do §3.2) ---------------------------------------
+def test_rent_per_m2():
+    results = _parse()
+    apt2 = next(r for r in results if "1-комнатная" in r.title)
+    # 270000 / 38 m² ≈ 7105.26
+    assert apt2.rent_per_m2 is not None
+    assert 7000 < apt2.rent_per_m2 < 7500
+
+
+# ---- duplicate_group_id set (2do §9) ---------------------------------------
+def test_duplicate_group_id_set():
+    results = _parse()
+    for r in results:
+        assert r.duplicate_group_id is not None
+
+
+# ---- extended KZ glossary (2do §14) ----------------------------------------
+def test_kz_glossary_has_multword_entries():
+    # Multiword entries must be present and longest-first sorted.
+    assert "жалға беремін" in _KZ_RU_GLOSS
+    assert _GLOSS_KEYS[0] == max(_GLOSS_KEYS, key=len)

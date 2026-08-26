@@ -1,4 +1,4 @@
-"""Tests for date extraction: helper functions and parser integration."""
+﻿"""Tests for date extraction: helper functions and parser integration."""
 from datetime import date, timedelta
 
 import pytest
@@ -9,7 +9,6 @@ from parsers.krisha import KrishaParser
 from parsers.olx import OlxParser
 from parsers.kn import KnParser
 from parsers.etagi import EtagiParser
-from parsers.kvartirka import KvartirkaParser
 
 from .loaders import load_fixture
 
@@ -127,9 +126,6 @@ def test_kn_extracts_relative_date():
     assert results[1].date_updated == "2024-08-10"
 
 
-def test_kvartirka_extracts_relative_date():
-    html = load_fixture("kvartirka")
-    parser = KvartirkaParser()
     results = parser.parse(html, SearchParams())
     assert len(results) == 2
     assert results[0].date_published == date.today().isoformat()

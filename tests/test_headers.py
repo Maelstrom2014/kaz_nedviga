@@ -77,6 +77,7 @@ class TestFetchWafFallback:
     def test_cffi_enabled_uses_cffi_first(self):
         from unittest import mock
         p = OlxParser()
+        p.fail_fast_on_waf = False  # exercise the rotate+fallback path
         assert p.use_cffi is True
         with mock.patch.object(p, "_fetch_cffi_any",
                                return_value="cffi-html") as cf, \
@@ -89,12 +90,27 @@ class TestFetchWafFallback:
     def test_cffi_all_profiles_fail_falls_back_to_requests(self):
         from unittest import mock
         p = OlxParser()
+        p.fail_fast_on_waf = False  # exercise the rotate+fallback path
         with mock.patch.object(p, "_fetch_cffi_any", return_value=None), \
              mock.patch.object(p, "_fetch_requests",
                                return_value="plain-html") as rq:
             html = p.fetch("https://example.test/page")
         assert html == "plain-html"
         rq.assert_called_once()
+
+    def test_fail_fast_uses_single_cffi_session(self):
+        from unittest import mock
+        p = OlxParser()
+        assert p.fail_fast_on_waf is True
+        with mock.patch.object(p, "_fetch_cffi",
+                               return_value="ff-html") as fc, \
+             mock.patch.object(p, "_fetch_cffi_any") as cfa, \
+             mock.patch.object(p, "_fetch_requests") as rq:
+            html = p.fetch("https://example.test/page")
+        assert html == "ff-html"
+        fc.assert_called_once()
+        cfa.assert_not_called()
+        rq.assert_not_called()
 
     def test_waf_block_detection(self):
         from unittest import mock

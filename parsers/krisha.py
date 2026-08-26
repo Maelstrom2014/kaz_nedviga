@@ -19,6 +19,11 @@ class KrishaParser(BaseParser):
     # Enrich EVERY listing with detail-page gallery photos (the search card
     # exposes only the first frame). Also pulls map coords for the heatmap.
     enrich_photo_count = 1000
+    # ajaxPhones needs the session that loaded the detail page (cookies +
+    # Referer); krisha.py passes it via fetch_session. A transient 403 from
+    # a slow request recovers on retry.
+    phone_endpoint_retries = 1
+    phone_endpoint_cooldown = 4.0
 
     def _build_url_base(self, params: SearchParams) -> str:
         parts: list[str] = ["sort=submit_date"]
@@ -147,10 +152,13 @@ class KrishaParser(BaseParser):
     def _fetch_detail_photos(self, listing: Listing) -> list[str]:
         """Fetch the krisha listing detail page and extract all gallery photos."""
         try:
-            html = self.fetch(listing.url)
+            session, html = self.fetch_session(listing.url)
             soup = self.parse_html(html)
         except Exception:
             return []
+        # Phone is hidden behind a click-to-show button; the raw value is
+        # in the page source (data attrs / JSON state / text).
+        self._enrich_phone(listing, html, session)
         # krisha embeds the map location in a JSON blob on the detail page.
         coords = re.search(r'"map":\{"lat":([\d.]+),"lon":([\d.]+)', html)
         if coords:

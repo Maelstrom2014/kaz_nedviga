@@ -341,6 +341,10 @@ class EtagiParser(BaseParser):
         except Exception:
             return []
 
+        # Phone: etagi hides it behind a "show number" button, but the raw
+        # value sits in the page source (state JSON / data attrs / text).
+        self._enrich_phone(listing, html)
+
         photos: list[str] = []
         seen: set[str] = set()
 

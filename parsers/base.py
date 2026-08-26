@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import itertools
 import logging
 import random
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -41,6 +44,22 @@ if not log.handlers:
 # when the dev server does add one.
 log.propagate = False
 
+# --- Phone extraction log: separate file, one line per listing/endpoint ---
+_PHONE_LOG_PATH = Path(__file__).parent.parent / "phone_extraction.log"
+_phone_fmt = logging.Formatter(
+    "%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+)
+_phone_handler = logging.FileHandler(
+    str(_PHONE_LOG_PATH), mode="a", encoding="utf-8")
+_phone_handler.setLevel(logging.DEBUG)
+_phone_handler.setFormatter(_phone_fmt)
+phone_log = logging.getLogger("parsers.phone")
+phone_log.setLevel(logging.DEBUG)
+if not phone_log.handlers:
+    phone_log.addHandler(_phone_handler)
+# Keep phone lines out of parsers_errors.log and the console.
+phone_log.propagate = False
+
 
 # ============================================================
 # Parser run statistics — captured during run() for the analyzer tab
@@ -59,6 +78,11 @@ class ParserRunStats:
     error_type: str = ""
     http_status: str = ""
     timestamp: str = ""
+    # Phone extraction: how many results ended up with a phone number and
+    # why the rest didn't (reason -> count).
+    phones_found: int = 0
+    phones_missing: int = 0
+    phone_reasons: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -72,6 +96,9 @@ class ParserRunStats:
             "error_type": self.error_type,
             "http_status": self.http_status,
             "timestamp": self.timestamp,
+            "phones_found": self.phones_found,
+            "phones_missing": self.phones_missing,
+            "phone_reasons": dict(self.phone_reasons),
         }
 
 
@@ -217,6 +244,89 @@ def parse_floor_pair(value: str | None) -> tuple[int | None, int | None]:
     return None, None
 
 
+# --- Phone normalization (shared by telegram & twogis) --------------------
+# Kazakhstan numbers appear in many shapes; collapse to a single canonical
+# form so a phone cluster can be built (one landlord → several listings).
+_PHONE_DIGITS_RE = re.compile(r"\d")
+_WA_PHONE_RE = re.compile(
+    r"(?:wa\.me|api\.whatsapp\.com/send\?phone=)(\d{10,15})", re.I)
+
+
+def _canonical_phone_digits(s: str) -> str:
+    """Collapse a digits-only string to ``+7XXXXXXXXXX``; ``""`` if not a phone.
+
+    Accepts the 11-digit international forms (+7/8/007 — KZ and RU) and the
+    bare 10-digit national form (KZ ``7XXXXXXXXX``, RU mobile/landline).
+    """
+    if s.startswith("00"):  # international dialing prefix: 007...
+        s = s[2:]
+    if len(s) == 11 and s[0] in "78":
+        s = s[1:]
+    if len(s) != 10:
+        return ""
+    # National 10 digits: 7 = KZ (mobile 70X/74X/75X/77X, landline 71XX-79XX);
+    # 9 / 3-6 / 8 = RU mobile/landline.  0/1/2 are not phone prefixes.
+    if s[0] not in "3456789":
+        return ""
+    return "+7" + s
+
+
+def normalize_phone(raw: str | None) -> str:
+    """Normalize a KZ/RU phone to ``+7XXXXXXXXXX`` (10 digits after +7).
+
+    Accepts ``8707...``, ``+7 707 ...``, ``8 (707) 123-45-67``, bare KZ
+    ``707 123 45 67``, ``wa.me/77071234567`` etc. Returns ``""`` if it can't
+    be normalized to a plausible KZ mobile/landline.
+    """
+    if not raw:
+        return ""
+    # Extract a wa.me/api.whatsapp phone if present (highest priority).
+    wm = _WA_PHONE_RE.search(str(raw))
+    if wm:
+        return _canonical_phone_digits(wm.group(1))
+    digits = "".join(_PHONE_DIGITS_RE.findall(str(raw)))
+    if not digits:
+        return ""
+    return _canonical_phone_digits(digits)
+
+
+# --- Property fingerprint (cross-source dedup) ---------------------------
+def property_fingerprint(
+    *,
+    building_id: str | None = None,
+    normalized_location: str | None = None,
+    rooms: int | None = None,
+    area: float | None = None,
+    floor: int | None = None,
+    price: int | None = None,
+) -> str:
+    """Build a deterministic ``duplicate_group_id`` for a listing.
+
+    Buckets area within ±2 m² (floor) and price within ±5% so trivial
+    variations (``54.8`` vs ``55`` m², 250 000 vs 258 000 ₸) collapse to the
+    same fingerprint while genuinely different flats stay apart. Returns
+    ``""`` if there is not enough signal (no location AND no price).
+    """
+    loc = (building_id or normalized_location or "").strip().lower()
+    if not loc and price is None:
+        return ""
+    area_bucket = int(area) if area is not None else None
+    # Floor price to a ~8% band (20 000 ₸ step for typical rents) so two
+    # listings whose rent differs by a few thousand due to wording round
+    # the same apartment collapse to one fingerprint. Genuine price gaps
+    # (e.g. 250 000 vs 300 000) land in different bands.
+    step = 20000
+    price_bucket = ((price // step) * step) if price else None
+    parts = [
+        loc or "_",
+        str(rooms) if rooms is not None else "_",
+        str(area_bucket) if area_bucket is not None else "_",
+        str(floor) if floor is not None else "_",
+        str(price_bucket) if price_bucket is not None else "_",
+    ]
+    return "|".join(parts)
+
+
 # --- Russian date parsing ---
 _MONTHS = {
     "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "май": 5, "мая": 5,
@@ -352,6 +462,14 @@ class BaseParser:
         self.last_stats: ParserRunStats = ParserRunStats(
             name=self.name, base_url=self.base_url, status="pending"
         )
+        # Per-run phone outcomes: listing.url -> "found:<stage>" or a
+        # missing-reason. Reset at the start of every run().
+        self._phone_outcomes: dict[str, str] = {}
+        # Serializes click-to-reveal phone-API calls so concurrent detail
+        # fetches (ThreadPoolExecutor in _enrich_photos) cannot burst-fire
+        # the endpoint and trigger a soft rate-limit (OLX returns 400).
+        self._phone_endpoint_lock = threading.Lock()
+        self._phone_last_call = 0.0
 
     # ---- URL building -------------------------------------------------
     # build_url() is defined below with pagination support;
@@ -380,6 +498,81 @@ class BaseParser:
     # requests on profile rotation / fallbacks — retrying a block only
     # escalates it (the block lifts on its own).
     fail_fast_on_waf: ClassVar[bool] = False
+    # Bounded WAF cooldown (fail-fast path only): on a 403/429/503, sleep and
+    # retry up to waf_max_retries times. 0 = fail immediately (default).
+    waf_max_retries: ClassVar[int] = 0
+    waf_cooldown: ClassVar[float] = 30.0
+    waf_max_cooldown: ClassVar[float] = 120.0
+    # Site support/hotline numbers that leak into the page source (footer
+    # tel: links). They must never be reported as the advertiser's phone.
+    phone_blacklist: ClassVar[frozenset[str]] = frozenset()
+    # Click-to-reveal phone endpoint throttling. The reveal API (OLX /phones,
+    # kn.kz /card/phone, krisha.kz ajaxPhones) rate-limits rapid successive
+    # calls — once _enrich_photos fans out to a 6-thread pool, concurrent
+    # calls burst-fire it and the site soft-blocks (OLX: 400). The instance
+    # lock (_phone_endpoint_lock) serializes calls across threads; the min
+    # interval caps throughput; retries recover transient 400/429/503.
+    phone_endpoint_retries: ClassVar[int] = 0
+    phone_endpoint_cooldown: ClassVar[float] = 2.0
+    phone_endpoint_min_interval: ClassVar[float] = 0.0
+    # Page-only phone mode. When False, _enrich_phone skips the click-to-reveal
+    # XHR endpoints (OLX /phones, kn.kz /card/phone, krisha.kz ajaxPhones) and
+    # relies solely on the page source (tel:/wa.me links, JSON state, visible
+    # text). OLX uses this to avoid the reveal-API rate limits entirely: the
+    # masked number is never present in the page HTML.
+    phone_endpoint_enabled: ClassVar[bool] = True
+
+    def _proxy_kwargs(self) -> dict:
+        """Return ``{"http": url, "https": url}`` for the current rotation proxy,
+        or ``{}`` when proxies are disabled, the site is not selected, or the
+        pool is empty (direct)."""
+        from .proxy import get_pool
+        try:
+            pk = get_pool().get_proxies(self.name)
+            return pk
+        except Exception as exc:
+            log.debug("[%s] proxy lookup failed, using direct: %s", self.name, exc)
+            return {}
+
+    def _note_proxy_error(self, url: str, pk: dict, exc: Exception) -> None:
+        """Log a proxy request failure to the shared pool's error log."""
+        try:
+            from .proxy import get_pool
+            if pk and get_pool().enabled:
+                get_pool().log_error(self.name, url, pk.get("https", ""),
+                                     "%s: %s" % (type(exc).__name__, exc))
+        except Exception:
+            pass
+
+    def _note_proxy_used(self, pk: dict) -> None:
+        """Record that a request for this site went through the given proxy."""
+        try:
+            from .proxy import get_pool
+            if pk and get_pool().enabled:
+                get_pool().note_use(self.name, pk.get("https", ""))
+        except Exception:
+            pass
+
+    def _proxy_tries(self) -> list:
+        """Ordered proxy kwargs to try for this site: up to
+        ``proxy_max_retries`` rotated proxies, then one direct (``{}``) attempt.
+        Always ends with ``{}`` so a site still parses when every proxy is dead.
+        Returns ``[{}]`` when proxies are disabled or not selected for the site."""
+        from .proxy import get_pool
+        try:
+            max_retries = int(get_pool().proxy_max_retries)
+        except Exception:
+            max_retries = 2
+        first = self._proxy_kwargs()
+        if not first:
+            return [{}]
+        tries = []
+        cur = first
+        for _ in range(max(0, max_retries)):
+            tries.append(cur)
+            cur = self._proxy_kwargs()
+        tries.append({})  # direct fallback
+        return tries
 
     def _fetch_cffi(self, url: str, profile: str | None = None) -> str:
         from curl_cffi import requests as cffi_requests
@@ -391,7 +584,19 @@ class BaseParser:
             session = self._cffi_session
         else:
             session = cffi_requests.Session(impersonate=profile)
-        resp = session.get(url, timeout=self.timeout)
+        resp = None
+        last_exc = None
+        for pk in self._proxy_tries():
+            try:
+                tmo = self.timeout if not pk else min(self.timeout, 5)
+                resp = session.get(url, timeout=tmo, proxies=pk)
+                self._note_proxy_used(pk)
+                break
+            except Exception as exc:
+                last_exc = exc
+                self._note_proxy_error(url, pk, exc)
+        if resp is None:
+            raise last_exc if last_exc else RuntimeError("cffi fetch failed")
         log.debug("[%s] cffi HTTP %s — %d bytes", self.name, resp.status_code, len(resp.text or ""))
         try:
             resp.raise_for_status()
@@ -424,9 +629,29 @@ class BaseParser:
         time.sleep(random.uniform(0.2, 0.8))
         if self.use_cffi:
             if self.fail_fast_on_waf:
-                # One consistent session, no rotation: a WAF block lifts on
-                # its own, so surface the failure instead of hammering.
-                return self._fetch_cffi(url)
+                # One consistent session, no rotation: a WAF block is
+                # IP-based and lifts on its own. Fail fast by default; when
+                # waf_max_retries > 0, back off and retry a bounded number of
+                # times so a short block clears within the run.
+                attempt = 0
+                while True:
+                    attempt += 1
+                    try:
+                        return self._fetch_cffi(url)
+                    except Exception as exc:
+                        if (self._is_waf_block(exc) and self.waf_max_retries > 0
+                                and attempt <= self.waf_max_retries):
+                            delay = min(self.waf_cooldown * attempt,
+                                        self.waf_max_cooldown)
+                            delay += random.uniform(0.0, 1.0)
+                            log.warning(
+                                "[%s] WAF block (%s); cooling down %.0fs "
+                                "(retry %d/%d)",
+                                self.name, type(exc).__name__, delay,
+                                attempt, self.waf_max_retries)
+                            time.sleep(delay)
+                            continue
+                        raise
             # Preferred path: rotate browser profiles — a WAF may allow one
             # fingerprint and block another after rate limiting.
             html = self._fetch_cffi_any(url)
@@ -446,51 +671,91 @@ class BaseParser:
                     return html
             raise
 
+    def fetch_session(self, url: str) -> tuple[requests.Session, str]:
+        """GET ``url`` and return ``(session, text)``.
+
+        Some sites (kn.kz) gate the phone behind an XHR reveal endpoint
+        that only answers for the session which loaded the detail page
+        (cookie + Referer). The page and the endpoint must therefore
+        share one browser session — use this instead of fetch().
+        """
+        return self._fetch_requests_session(url)
+
     def _fetch_requests(self, url: str) -> str:
+        _, text = self._fetch_requests_session(url)
+        return text
+
+    def _fetch_requests_session(self, url: str) -> tuple[requests.Session, str]:
+        """Like _fetch_requests, but returns (session, text) so follow-up
+        calls can reuse the same browser session (cookies persist).
+
+        Proxies are best-effort: up to ``proxy_max_retries`` rotated proxies
+        are tried, then one direct request, so the site still parses when
+        every proxy is dead. Connection-level failures and repeated 403/429
+        rotate to the next proxy; a genuine server error raises immediately."""
         session = requests.Session()
         # Fresh randomized headers for each request
         session.headers.update({**_random_headers(), **{k: v for k, v in self.headers.items() if k not in _random_headers()}})
-        for attempt, verify in [(0, True), (1, False)]:
-            try:
-                log.debug("[%s] requests.GET %s (verify=%s)", self.name, url, verify)
-                resp = session.get(url, timeout=self.timeout, allow_redirects=True, verify=verify)
-                log.debug("[%s] HTTP %s — %d bytes (Content-Type: %s)",
-                          self.name, resp.status_code, len(resp.content),
-                          resp.headers.get("Content-Type", "?")[:60])
-                resp.raise_for_status()
-                # Fix encoding: prefer content-type header, then apparent, then utf-8
-                ct = resp.headers.get("Content-Type", "")
-                if "charset=" in ct:
-                    resp.encoding = ct.split("charset=")[-1].strip()
-                elif resp.apparent_encoding:
-                    resp.encoding = resp.apparent_encoding
-                else:
-                    resp.encoding = "utf-8"
-                text = resp.text
-                # Fallback: if text looks like mojibake, try utf-8 directly
-                if "\\u0" in repr(text)[:200] or "Ä" in text[:100]:
-                    try:
-                        text = resp.content.decode("utf-8")
-                    except Exception:
-                        pass
-                return text
-            except requests.exceptions.SSLError as exc:
-                if attempt == 0:
-                    log.debug("[%s] SSL error, retrying verify=False", self.name)
-                    continue
-                raise
-            except requests.exceptions.HTTPError as exc:
-                status = getattr(exc.response, "status_code", None)
-                if status == 403 and attempt == 0:
-                    # Rejected with the current header fingerprint — retry with
-                    # fresh randomized headers, otherwise the same request is
-                    # just blocked again.
-                    log.debug("[%s] 403, retrying with fresh headers", self.name)
-                    session.headers.update(_random_headers())
-                    time.sleep(random.uniform(0.5, 1.5))
-                    continue
-                raise
-
+        last_exc = None
+        for pk in self._proxy_tries():
+            session.proxies = pk
+            tmo = self.timeout if not pk else min(self.timeout, 5)
+            for attempt, verify in [(0, True), (1, False)]:
+                try:
+                    log.debug("[%s] requests.GET %s (verify=%s, proxy=%s)",
+                              self.name, url, verify, bool(pk))
+                    resp = session.get(url, timeout=tmo, allow_redirects=True, verify=verify)
+                    log.debug("[%s] HTTP %s — %d bytes (Content-Type: %s)",
+                              self.name, resp.status_code, len(resp.content),
+                              resp.headers.get("Content-Type", "?")[:60])
+                    resp.raise_for_status()
+                    # Fix encoding: prefer content-type header, then apparent, then utf-8
+                    ct = resp.headers.get("Content-Type", "")
+                    if "charset=" in ct:
+                        resp.encoding = ct.split("charset=")[-1].strip()
+                    elif resp.apparent_encoding:
+                        resp.encoding = resp.apparent_encoding
+                    else:
+                        resp.encoding = "utf-8"
+                    text = resp.text
+                    # Fallback: if text looks like mojibake, try utf-8 directly
+                    if "\\u0" in repr(text)[:200] or "Ä" in text[:100]:
+                        try:
+                            text = resp.content.decode("utf-8")
+                        except Exception:
+                            pass
+                    self._note_proxy_used(pk)
+                    return session, text
+                except requests.exceptions.SSLError as exc:
+                    if attempt == 0:
+                        log.debug("[%s] SSL error, retrying verify=False", self.name)
+                        continue
+                    last_exc = exc
+                    break
+                except requests.exceptions.HTTPError as exc:
+                    status = getattr(exc.response, "status_code", None)
+                    if status == 403 and attempt == 0:
+                        log.debug("[%s] 403, retrying with fresh headers", self.name)
+                        session.headers.update(_random_headers())
+                        time.sleep(random.uniform(0.5, 1.5))
+                        continue
+                    if status in (403, 429) and pk:
+                        # The proxy's IP was likely blocked; rotate to the next.
+                        last_exc = exc
+                        self._note_proxy_error(url, pk, exc)
+                        break
+                    raise
+                except requests.exceptions.RequestException as exc:
+                    last_exc = exc
+                    self._note_proxy_error(url, pk, exc)
+                    break
+            if not pk:
+                # Direct request failed; no more fallbacks.
+                if last_exc is not None:
+                    raise last_exc
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("requests fetch failed")
     def parse_html(self, html: str) -> BeautifulSoup:
         return BeautifulSoup(html, "lxml")
 
@@ -530,6 +795,15 @@ class BaseParser:
     def _parse_soup(self, soup: BeautifulSoup, params: SearchParams) -> list[Listing]:
         raise NotImplementedError
 
+    def is_unavailable(self, html: str) -> bool:
+        """Detail page of a removed listing served with HTTP 200.
+
+        Default: False — removed ads of most sources fail with an HTTP
+        error instead. Only parsers that know the site's "ad is gone"
+        page (OLX) override this.
+        """
+        return False
+
     def extract_detail_price(self, html: str, url: str) -> tuple:
         """Extract (price, lat, lon) from a detail page.
 
@@ -550,6 +824,439 @@ class BaseParser:
             if r_base == fav_base or fav_base in r_base or r_base in fav_base:
                 return (r.price, r.lat, r.lon)
         return (None, None, None)
+
+    # ---- Phone extraction ---------------------------------------------
+    # KZ/RU numbers: 11 digits starting with 7 or 8 (network code 7XX KZ
+    # mobile, 9XX/8XX RU mobile, 3XX-6XX/8XX RU landline) or the bare
+    # 10-digit KZ national form ``7XX XXX XX XX`` without the leading 7/8.
+    # Detail pages hide the number behind a "Показать телефон" button, but
+    # the raw value still sits in the source: on the button itself, tel: /
+    # WhatsApp links, data-* attributes, embedded JSON state, inline JS
+    # (sometimes base64- or charCode-obfuscated), visible text — or it is
+    # served from a click-to-reveal XHR endpoint (phonesUrl & co).
+    _PHONE_CAND_RE = re.compile(
+        r"(?<!\d)(?:"
+        r"(?:\+|00)?[78][\s\-()]?\(?\d{3}\)?[\s\-()]?"
+        r"\d{3}[\s\-()]?\d{2}[\s\-()]?\d{2}"
+        r"|"
+        r"7[\s\-()]?\(?\d{2}\)?[\s\-()]?"
+        r"\d{3}[\s\-()]?\d{2}[\s\-()]?\d{2}"
+        r")(?!\d)"
+    )
+    # JSON state keys: "phone"/"phoneNumber"/"tel"/"mobile"/... with a
+    # quoted string, a bare number, or a single-element array value.
+    _PHONE_KEY_RE = re.compile(
+        r'["\'](?:phone\w*|tel\w*|mobile\w*|whatsapp\w*)["\']'
+        r'\s*:\s*'
+        r'(?:"([^"]{4,40})"|\'([^\']{4,40})\'|(\d{10,13})|\[\s*"([^"]{4,40})")',
+        re.I,
+    )
+    _PHONE_KW_RE = re.compile(
+        r"(?:tel|phone|телефон|контакт|связ|звон|whatsapp|вацап|viber)"
+        r"[^0-9+\-]{0,20}"
+        r"((?:\+|00)?[78][\s\-()]?\(?\d{3}\)?[\s\-()]?"
+        r"\d{3}[\s\-()]?\d{2}[\s\-()]?\d{2}"
+        r"|"
+        r"7[\s\-()]?\(?\d{2}\)?[\s\-()]?"
+        r"\d{3}[\s\-()]?\d{2}[\s\-()]?\d{2})(?!\d)", re.I,
+    )
+    _PHONE_ATTR_RE = re.compile(
+        r"^data[-_]?phone(?:number)?$|^data[-_]?tel(?:ephone)?$", re.I,
+    )
+    # WhatsApp deep links: wa.me/7705..., api.whatsapp.com, whatsapp://
+    _WA_HREF_RE = re.compile(
+        r"(?:wa\.me/|api\.whatsapp\.com/send\?phone=|whatsapp://send\?phone=)"
+        r"(\d{10,15})", re.I,
+    )
+    # The button that hides the number: "Показать телефон / показать номер
+    # / показать свой номер / show phone number". Its own markup (data-*
+    # attributes, onclick handler, plain text) is the most reliable source.
+    _REVEAL_BTN_TEXT_RE = re.compile(
+        r"(?:показать|посмотреть|show)\s+(?:свой\s+)?(?:телефон|номер|контакт)|"
+        r"телефон\s+(?:скрыт|защищ)|скрыт(?:ый|ая)?\s+(?:телефон|номер)",
+        re.I,
+    )
+    # Classic JS obfuscation of the number: base64 blobs and
+    # String.fromCharCode(43,56,55,...) sequences.
+    _B64_BLOB_RE = re.compile(r"[A-Za-z0-9+/]{12,56}={0,2}")
+    _CHARCODE_RE = re.compile(r"fromCharCode\(([\d,\s]{10,400})\)")
+    # Click-to-reveal endpoint URLs embedded in the page source (the button's
+    # JS calls them): data-show-phone-url-value (kn.kz), "phonesUrl" state
+    # keys (krisha.kz), /ajax/...phone paths.
+    _PHONE_ENDPOINT_RES = (
+        re.compile(r'data-(?:show-)?phone(?:s)?[-_]?url(?:-value)?="([^"]+)"',
+                   re.I),
+        re.compile(
+            r'["\'](?:phones?_?url|showphoneurl|revealphoneurl|phoneendpoint)'
+            r'["\']\s*:\s*["\']([^"\']+)["\']', re.I),
+        re.compile(r'["\']([^"\']*?/ajax[^"\']{0,40}phone[^"\']{0,40})["\']',
+                   re.I),
+        re.compile(r'["\'](/[^"\']{0,80}/phones?[^"\']{0,40})["\']', re.I),
+    )
+
+    @staticmethod
+    def _valid_phone(raw: str) -> str:
+        """Normalize a candidate to +7XXXXXXXXXX; '' when invalid/masked."""
+        if not raw or any(c in raw for c in "*?•."):
+            return ""
+        return _canonical_phone_digits(re.sub(r"\D", "", raw))
+
+    def _first_valid(self, text: str) -> str:
+        """First phone candidate in *text* that passes validation + blacklist."""
+        for m in self._PHONE_CAND_RE.finditer(text or ""):
+            cand = m.group(0)
+            digits = re.sub(r"\D", "", cand)
+            # A bare unseparated 10-digit run in free text is more often an
+            # ID than a phone number — accept it only when formatted.
+            if len(digits) == 10 and not re.search(r"[\s\-()]", cand):
+                continue
+            phone = self._valid_phone(cand)
+            if phone and phone not in self.phone_blacklist:
+                return phone
+        return ""
+
+    def _reveal_buttons(self, soup):
+        """Yield elements whose text reads like a "Показать телефон" button."""
+        seen: set[int] = set()
+        for match in soup.find_all(string=self._REVEAL_BTN_TEXT_RE):
+            node = match.parent
+            while (node is not None
+                   and node.name not in ("button", "a", "span", "div", "p")):
+                node = node.parent
+            if node is None or id(node) in seen:
+                continue
+            seen.add(id(node))
+            yield node
+
+    def _phone_from_scripts(self, soup) -> list[str]:
+        """Phone numbers hidden inside <script> JavaScript.
+
+        The value may sit in a plain assignment (``phone: "7 705 ..."``),
+        be base64-encoded, or be built with String.fromCharCode(...) — all
+        three shapes are decoded and the results validated.
+        """
+        found: list[str] = []
+        for script in soup.find_all("script"):
+            js = script.get_text() or ""
+            if not js:
+                continue
+            for m in self._PHONE_KW_RE.finditer(js):
+                phone = self._valid_phone(m.group(1))
+                if phone and phone not in self.phone_blacklist:
+                    found.append(phone)
+            for m in itertools.islice(self._B64_BLOB_RE.finditer(js), 200):
+                try:
+                    blob = m.group(0)
+                    dec = base64.b64decode(
+                        blob + "=" * (-len(blob) % 4)).decode("utf-8", "ignore")
+                except Exception:
+                    continue
+                if not re.search(r"\d{5,}", dec):
+                    continue
+                for cand in self._PHONE_CAND_RE.finditer(dec):
+                    phone = self._valid_phone(cand.group(0))
+                    if phone and phone not in self.phone_blacklist:
+                        found.append(phone)
+            for m in itertools.islice(self._CHARCODE_RE.finditer(js), 20):
+                try:
+                    dec = "".join(
+                        chr(int(part)) for part in m.group(1).split(",")
+                        if part.strip().isdigit())
+                except Exception:
+                    continue
+                for cand in self._PHONE_CAND_RE.finditer(dec):
+                    phone = self._valid_phone(cand.group(0))
+                    if phone and phone not in self.phone_blacklist:
+                        found.append(phone)
+        return found
+
+    def extract_detail_phone(self, html: str) -> str:
+        """Extract the contact phone from a detail page.
+
+        The number is usually hidden behind a "Показать телефон" button,
+        yet the raw value is still in the page source. Sources, in priority
+        order: the reveal button's own markup (data-* attributes, onclick,
+        plain text), tel: links, WhatsApp links, data-phone/data-tel
+        attributes, JSON "phone" state keys (incl. camelCase keys, bare
+        numbers, arrays), inline JS (plain/base64/charCode), visible text,
+        keyword-anchored raw HTML. Returns "" when nothing found.
+        """
+        phone, _ = self._extract_detail_phone(html)
+        return phone
+
+    def _extract_detail_phone(self, html: str) -> tuple[str, str]:
+        """Like extract_detail_phone, but also reports the winning stage.
+
+        Stage names: button, tel_link, wa_link, data_attr, json_state,
+        js_script, visible_text, raw_keyword — or "" when not found.
+        """
+        if not html:
+            return "", ""
+        soup = BeautifulSoup(html, "html.parser")
+
+        def ok(phone: str) -> bool:
+            return bool(phone) and phone not in self.phone_blacklist
+
+        # 1) "Показать телефон" button — the number often lives right in
+        #    the button's markup (data-* attr, onclick, adjacent text).
+        for btn in self._reveal_buttons(soup):
+            phone = self._first_valid(str(btn)[:4000])
+            if ok(phone):
+                return phone, "button"
+        # 2) tel: links
+        for a in soup.find_all("a", href=re.compile(r"^tel:")):
+            phone = self._valid_phone((a.get("href") or "")[4:])
+            if ok(phone):
+                return phone, "tel_link"
+        # 3) WhatsApp links: wa.me/7705..., whatsapp://send?phone=...
+        for a in soup.find_all("a", href=True):
+            m = self._WA_HREF_RE.search(a.get("href") or "")
+            if m:
+                phone = self._valid_phone(m.group(1))
+                if ok(phone):
+                    return phone, "wa_link"
+        # 4) data-phone / data-tel / data-phonenumber attributes
+        #    (bs4 >= 4.13 ignores a compiled regex in attrs=, so match
+        #    attribute names with a tag predicate instead)
+        for el in soup.find_all(
+                lambda t: any(self._PHONE_ATTR_RE.match(a) for a in t.attrs)):
+            for attr, val in el.attrs.items():
+                if isinstance(val, str) and self._PHONE_ATTR_RE.match(attr):
+                    phone = self._valid_phone(val)
+                    if ok(phone):
+                        return phone, "data_attr"
+        # 5) JSON state: "phone": "+7 ...", "phoneNumber": "8 ...",
+        #    "phone": 77051234567, "phones": ["+7 ..."]
+        for m in self._PHONE_KEY_RE.finditer(html):
+            phone = self._valid_phone(
+                m.group(1) or m.group(2) or m.group(3) or m.group(4) or "")
+            if ok(phone):
+                return phone, "json_state"
+        # 6) inline JS behind the reveal button (plain/base64/charCode)
+        for phone in self._phone_from_scripts(soup):
+            if ok(phone):
+                return phone, "js_script"
+        # 7) visible text (a bare unseparated 10-digit run is an ID, not a
+        #    phone — the guard lives in _first_valid)
+        phone = self._first_valid(soup.get_text(" ", strip=True))
+        if phone:
+            return phone, "visible_text"
+        # 8) raw HTML, but only next to a phone keyword — bare digit
+        #    runs (IDs, hashes) are rejected.
+        for m in self._PHONE_KW_RE.finditer(html):
+            phone = self._valid_phone(m.group(1))
+            if ok(phone):
+                return phone, "raw_keyword"
+        return "", ""
+
+    def _record_phone_outcome(self, listing: Listing, outcome: str) -> None:
+        """Remember how a listing got (or didn't get) its phone this run."""
+        self._phone_outcomes[listing.url] = outcome
+
+    def _collect_phone_stats(self, results: list[Listing],
+                             stats: ParserRunStats) -> None:
+        """Fill phones_found / phones_missing / phone_reasons for a run.
+
+        Missing reasons: no_phone_source (nothing in the page source and
+        no reveal endpoint), endpoint_failed (endpoint(s) found but none
+        returned a phone), extraction_error (page parsing blew up),
+        detail_fetch_failed (detail page fetch failed, enrichment never
+        ran).
+        """
+        stats.phones_found = sum(1 for l in results if l.phone)
+        stats.phones_missing = len(results) - stats.phones_found
+        for l in results:
+            if not l.phone:
+                reason = (self._phone_outcomes.get(l.url)
+                          or "detail_fetch_failed")
+                stats.phone_reasons[reason] = (
+                    stats.phone_reasons.get(reason, 0) + 1)
+        if results:
+            detail = (", ".join("%s=%d" % kv
+                                for kv in sorted(stats.phone_reasons.items()))
+                      if stats.phone_reasons else "none")
+            log.info("[%s] phones: %d found, %d missing (%s)",
+                     self.name, stats.phones_found, stats.phones_missing,
+                     detail)
+
+    def _enrich_phone(
+        self,
+        listing: Listing,
+        html: str,
+        session: requests.Session | None = None,
+    ) -> None:
+        """Set listing.phone from the detail page when it is still empty.
+
+        Called by parsers from _fetch_detail_photos() right after the
+        detail page is fetched — the same request that collects photos.
+        First tries the page source (reveal-button markup, tel:/wa.me
+        links, JSON state, inline JS, visible text); if the number is
+        served from a click-to-reveal XHR endpoint instead, the endpoint
+        URL is discovered from the page and fetched with the page's own
+        session (or a fresh one with randomized browser headers).
+        Every attempt is recorded in self._phone_outcomes (for run stats)
+        and in phone_extraction.log (via the "parsers.phone" logger).
+        """
+        if listing.phone:
+            return
+        try:
+            phone, stage = self._extract_detail_phone(html)
+        except Exception as exc:
+            log.debug("[%s] phone extraction failed for %s: %s",
+                      self.name, listing.url[:60], exc)
+            self._record_phone_outcome(listing, "extraction_error")
+            phone_log.info("[%s] %s | missing | reason=extraction_error (%s)",
+                           self.name, listing.url[:120], type(exc).__name__)
+            return
+        if phone:
+            listing.phone = phone
+            self._record_phone_outcome(listing, "found:" + stage)
+            phone_log.info("[%s] %s | found %s | stage=%s",
+                           self.name, listing.url[:120], phone, stage)
+            return
+        # Page source exhausted — try click-to-reveal XHR endpoints.
+        reason = "no_phone_source"
+        if self.phone_endpoint_enabled:
+            try:
+                for endpoint in self._discover_phone_endpoints(html):
+                    phone = self.fetch_phone_endpoint(
+                        session or self._ephemeral_session(),
+                        endpoint, listing.url)
+                    if phone:
+                        listing.phone = phone
+                        self._record_phone_outcome(listing, "found:endpoint")
+                        phone_log.info(
+                            "[%s] %s | found %s | stage=endpoint | url=%s",
+                            self.name, listing.url[:120], phone, endpoint)
+                        return
+                    reason = "endpoint_failed"
+            except Exception as exc:
+                log.debug("[%s] phone endpoint discovery failed for %s: %s",
+                          self.name, listing.url[:60], exc)
+        self._record_phone_outcome(listing, reason)
+        phone_log.info("[%s] %s | missing | reason=%s",
+                       self.name, listing.url[:120], reason)
+
+    def _ephemeral_session(self) -> requests.Session:
+        """Throwaway session with randomized browser headers (no cookies).
+
+        Used for click-to-reveal XHR endpoints when the detail page was
+        fetched without a session (self.fetch) — the endpoint needs the
+        right headers + Referer, not the page's cookie jar.
+        """
+        sess = requests.Session()
+        _pk = self._proxy_kwargs()
+        if _pk:
+            sess.proxies = _pk
+        sess.headers.update(_random_headers())
+        sess.headers["X-Requested-With"] = "XMLHttpRequest"
+        return sess
+
+    def _discover_phone_endpoints(self, html: str) -> list[str]:
+        """Find click-to-reveal phone endpoint URLs embedded in the page.
+
+        The reveal button's JS references the endpoint:
+        data-show-phone-url-value (kn.kz), a "phonesUrl" state key
+        (krisha.kz), or an /ajax/...phone path. Returns absolute URLs,
+        deduplicated, capped at 3.
+        """
+        found: list[str] = []
+        for rx in self._PHONE_ENDPOINT_RES:
+            for m in rx.finditer(html or ""):
+                url = m.group(1)
+                if not url:
+                    continue
+                if url.startswith("//"):
+                    url = "https:" + url
+                elif url.startswith("/") and self.base_url:
+                    url = self.base_url.rstrip("/") + url
+                if not url.startswith(("http://", "https://")):
+                    continue
+                if url in found:
+                    continue
+                found.append(url)
+                if len(found) >= 3:
+                    return found
+        return found
+
+    def fetch_phone_endpoint(
+        self,
+        session: requests.Session,
+        url: str,
+        referer: str,
+    ) -> str:
+        """GET a click-to-show phone endpoint in the page's own session.
+
+        Sites that keep the number out of the detail HTML (kn.kz) serve
+        it from an XHR endpoint. Answers seen in the wild: JSON with a
+        "phones" array (kn.kz) or an HTML fragment with a tel: link.
+        Returns the first valid, non-blacklisted phone or "".
+        """
+        if not url:
+            return ""
+        attempts = 1 + self.phone_endpoint_retries
+        resp = None
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(self.phone_endpoint_cooldown * attempt)
+            try:
+                # Serialize across the _enrich_photos thread pool: the reveal
+                # API rate-limits rapid concurrent calls (OLX -> 400).
+                with self._phone_endpoint_lock:
+                    elapsed = time.monotonic() - self._phone_last_call
+                    if elapsed < self.phone_endpoint_min_interval:
+                        time.sleep(self.phone_endpoint_min_interval - elapsed)
+                    self._phone_last_call = time.monotonic()
+                    resp = session.get(url, timeout=self.timeout, headers={
+                        "Referer": referer,
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Accept": "*/*",
+                    })
+            except Exception as exc:
+                log.debug("[%s] phone endpoint failed: %s", self.name, exc)
+                phone_log.info("[%s] endpoint %s | error=%s",
+                               self.name, url[:160], type(exc).__name__)
+                return ""
+            if resp.status_code == 200:
+                break
+            # 400/429/503 are transient (rate-limit); retry if budget left.
+            if (resp.status_code in (400, 429, 503)
+                    and attempt < attempts - 1):
+                phone_log.info(
+                    "[%s] endpoint %s | http=%s (retry %d/%d)",
+                    self.name, url[:160], resp.status_code,
+                    attempt + 1, self.phone_endpoint_retries)
+                continue
+            log.debug("[%s] phone endpoint %s -> HTTP %s",
+                      self.name, url, resp.status_code)
+            phone_log.info("[%s] endpoint %s | http=%s",
+                           self.name, url[:160], resp.status_code)
+            return ""
+        body = resp.text or ""
+        m = re.search(r'"phones"\s*:\s*\[([^\]]*)\]', body)
+        if m:
+            for part in re.findall(r'"([^"]+)"', m.group(1)):
+                phone = self._valid_phone(part)
+                if phone and phone not in self.phone_blacklist:
+                    phone_log.info("[%s] endpoint %s | found %s",
+                                   self.name, url[:160], phone)
+                    return phone
+        # JSON answers with a phone key: "phone": "+7 ...", "tel": 7705...
+        for m in self._PHONE_KEY_RE.finditer(body):
+            phone = self._valid_phone(
+                m.group(1) or m.group(2) or m.group(3) or m.group(4) or "")
+            if phone and phone not in self.phone_blacklist:
+                phone_log.info("[%s] endpoint %s | found %s",
+                               self.name, url[:160], phone)
+                return phone
+        # HTML-fragment answers: reuse the page extractor (tel: links, ...)
+        phone = self.extract_detail_phone(body)
+        if phone:
+            phone_log.info("[%s] endpoint %s | found %s",
+                           self.name, url[:160], phone)
+        else:
+            phone_log.info("[%s] endpoint %s | no_phone", self.name, url[:160])
+        return phone
 
     # ---- Filtering ----------------------------------------------------
     def filter_listing(self, listing: Listing, params: SearchParams) -> bool:
@@ -687,6 +1394,7 @@ class BaseParser:
             status="pending", timestamp=datetime.now().isoformat(sep=" ", timespec="seconds"),
         )
         self.last_stats = stats
+        self._phone_outcomes = {}
         t0 = time.monotonic()
         pages = 0
         log.info("[%s] === run start (max_pages=%d) ===", self.name,
@@ -730,9 +1438,12 @@ class BaseParser:
             stats.results_count = len(filtered)
             stats.status = "ok" if filtered else "empty"
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            self._collect_phone_stats(filtered, stats)
             _LAST_PARSER_STATS[self.name] = stats
-            log.info("[%s] === run done: %d results, %d pages, %.0fms ===",
-                     self.name, len(filtered), pages, stats.duration_ms)
+            log.info("[%s] === run done: %d results, %d pages, %.0fms, "
+                     "phones %d/%d ===",
+                     self.name, len(filtered), pages, stats.duration_ms,
+                     stats.phones_found, len(filtered))
             return filtered
         except requests.exceptions.HTTPError as exc:
             status_code = getattr(exc.response, "status_code", "?")
@@ -754,6 +1465,7 @@ class BaseParser:
                 if filtered:
                     self._enrich_photos(filtered)
                 stats.results_count = len(filtered)
+                self._collect_phone_stats(filtered, stats)
                 _LAST_PARSER_STATS[self.name] = stats
                 return filtered
             stats.status = "http_error"

@@ -51,6 +51,45 @@ CREATE TABLE IF NOT EXISTS price_history (
 
 CREATE INDEX IF NOT EXISTS idx_price_history_key
     ON price_history(listing_key, checked_at);
+
+CREATE TABLE IF NOT EXISTS buildings (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    building_id       TEXT    UNIQUE  NOT NULL,
+    address           TEXT    NOT NULL DEFAULT '',
+    street            TEXT    NOT NULL DEFAULT '',
+    house_number      TEXT    NOT NULL DEFAULT '',
+    lat               REAL,
+    lon               REAL,
+    floors_total      INTEGER,
+    building_material TEXT    NOT NULL DEFAULT '',
+    district          TEXT    NOT NULL DEFAULT '',
+    microdistrict    TEXT    NOT NULL DEFAULT '',
+    residential_complex TEXT NOT NULL DEFAULT '',
+    year_built        TEXT    NOT NULL DEFAULT '',
+    updated_at        TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS organizations (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    org_id        TEXT    UNIQUE  NOT NULL,
+    name          TEXT    NOT NULL DEFAULT '',
+    rubrics       TEXT    NOT NULL DEFAULT '',
+    rating        REAL,
+    review_count  INTEGER,
+    address       TEXT    NOT NULL DEFAULT '',
+    lat           REAL,
+    lon           REAL,
+    website       TEXT    NOT NULL DEFAULT '',
+    phones        TEXT    NOT NULL DEFAULT '',
+    parent_org_id TEXT    NOT NULL DEFAULT '',
+    branch_count  INTEGER,
+    updated_at    TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_organizations_phone
+    ON organizations(phones);
+CREATE INDEX IF NOT EXISTS idx_buildings_complex
+    ON buildings(residential_complex);
 """
 
 # Columns added after the initial schema. Applied on connect so older
@@ -60,6 +99,18 @@ _MIGRATIONS = [
     ("favorites", "date_updated", "TEXT NOT NULL DEFAULT ''"),
     ("favorites", "lat", "REAL"),
     ("favorites", "lon", "REAL"),
+    # Extended fields surfaced from 2GIS-first extraction (task_2gis_2do.md §5).
+    ("favorites", "listing_type",        "TEXT NOT NULL DEFAULT ''"),
+    ("favorites", "rental_period",       "TEXT NOT NULL DEFAULT ''"),
+    ("favorites", "deposit",             "INTEGER"),
+    ("favorites", "commission_percent",  "INTEGER"),
+    ("favorites", "utilities",           "TEXT NOT NULL DEFAULT ''"),
+    ("favorites", "building_id",         "TEXT NOT NULL DEFAULT ''"),
+    ("favorites", "residential_complex", "TEXT NOT NULL DEFAULT ''"),
+    ("favorites", "provider",            "TEXT NOT NULL DEFAULT ''"),
+    ("favorites", "owner_probability",   "REAL"),
+    ("favorites", "quality_score",       "INTEGER"),
+    ("favorites", "duplicate_group_id",  "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -226,6 +277,15 @@ def update_price(listing_key: str, price: Optional[int], currency: str = "тг")
     return get_favorite(listing_key)
 
 
+def update_phone(listing_key: str, phone: str) -> None:
+    """Update the contact phone on a favorite (from re-parsed detail page)."""
+    with db_cursor() as cur:
+        cur.execute(
+            "UPDATE favorites SET phone = ? WHERE listing_key = ?",
+            (phone, listing_key),
+        )
+
+
 def update_coords(listing_key: str, lat: Optional[float], lon: Optional[float]) -> None:
     """Update lat/lon on a favorite (from re-parsed detail page)."""
     with db_cursor() as cur:
@@ -253,10 +313,12 @@ def clear_favorites() -> int:
 
 
 def clear_all() -> None:
-    """Wipe all data from both tables but keep the schema (no file delete)."""
+    """Wipe all data from all tables but keep the schema (no file delete)."""
     with db_cursor() as cur:
         cur.execute("DELETE FROM price_history")
         cur.execute("DELETE FROM favorites")
+        cur.execute("DELETE FROM buildings")
+        cur.execute("DELETE FROM organizations")
 
 
 # ============================================================
@@ -324,10 +386,12 @@ def check_prices() -> list[dict]:
             # BaseParser.fetch: randomized anti-bot headers, SSL/403 retries,
             # encoding fixes — instead of a bare requests.get.
             html = parser.fetch(url)
-            # OLX returns 200 with "Объявление больше не доступно" for
-            # removed/expired listings. Early-exit before parsing so the
-            # favorite is marked unavailable immediately and clearly.
-            if source == "olx.kz" and "больше не доступно" in html.lower():
+            # Removed/expired listings can be served with HTTP 200 (OLX's
+            # "inactive ad" page). is_unavailable() is overridden per parser;
+            # for OLX it checks the ABSENCE of live-ad data — the i18n phrase
+            # "больше не доступно" sits in the JS bundle of every page, so a
+            # substring match marks live ads as gone.
+            if parser.is_unavailable(html):
                 updated.append(_entry(fav, None, False, "объявление больше не доступно"))
                 continue
             # Detail pages have a different structure than search card pages.
@@ -336,7 +400,10 @@ def check_prices() -> list[dict]:
             # etagi: embedded state, olx: [data-testid=ad-price]).
             price, lat, lon = parser.extract_detail_price(html, url)
             if price is None:
-                updated.append(_entry(fav, None, False, "объявление не найдено на странице"))
+                # Page loaded but no price found — the ad changed structure
+                # or the price was removed. (Gone ads fail earlier: HTTP error
+                # or the OLX "больше не доступно" page.)
+                updated.append(_entry(fav, None, False, "цена не найдена на странице"))
                 continue
             if price != fav["price"]:
                 update_price(fav["listing_key"], price, fav.get("currency", "тг"))
@@ -345,6 +412,14 @@ def check_prices() -> list[dict]:
             # JSON state). This keeps favorites' map markers accurate.
             if lat is not None and lon is not None:
                 update_coords(fav["listing_key"], lat, lon)
+            # Refresh the contact phone (often hidden behind a button on
+            # the live page, but present in the source).
+            try:
+                phone = parser.extract_detail_phone(html)
+                if phone and phone != (fav.get("phone") or ""):
+                    update_phone(fav["listing_key"], phone)
+            except Exception:
+                pass
             updated.append(_entry(fav, price, price != fav["price"]))
         except Exception as exc:
             updated.append(_entry(fav, None, False, str(exc)[:200]))
@@ -359,6 +434,126 @@ def check_prices() -> list[dict]:
 
 def init_db():
     get_conn()
+
+
+# ============================================================
+# Buildings (task_2gis_2do.md §11.1)
+# ============================================================
+
+def upsert_building(data: dict) -> dict | None:
+    """Insert or update a building record by ``building_id``."""
+    bid = str(data.get("building_id") or "").strip()
+    if not bid:
+        return None
+    row = {
+        "building_id": bid,
+        "address": str(data.get("address") or ""),
+        "street": str(data.get("street") or ""),
+        "house_number": str(data.get("house_number") or ""),
+        "lat": data.get("lat"),
+        "lon": data.get("lon"),
+        "floors_total": data.get("floors_total"),
+        "building_material": str(data.get("building_material") or ""),
+        "district": str(data.get("district") or ""),
+        "microdistrict": str(data.get("microdistrict") or ""),
+        "residential_complex": str(data.get("residential_complex") or ""),
+        "year_built": str(data.get("year_built") or ""),
+        "updated_at": _now(),
+    }
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO buildings (building_id, address, street, house_number, "
+            "lat, lon, floors_total, building_material, district, microdistrict, "
+            "residential_complex, year_built, updated_at) "
+            "VALUES (:building_id, :address, :street, :house_number, :lat, :lon, "
+            ":floors_total, :building_material, :district, :microdistrict, "
+            ":residential_complex, :year_built, :updated_at) "
+            "ON CONFLICT(building_id) DO UPDATE SET "
+            "address=excluded.address, street=excluded.street, "
+            "house_number=excluded.house_number, lat=excluded.lat, lon=excluded.lon, "
+            "floors_total=excluded.floors_total, "
+            "building_material=excluded.building_material, "
+            "district=excluded.district, microdistrict=excluded.microdistrict, "
+            "residential_complex=excluded.residential_complex, "
+            "year_built=excluded.year_built, updated_at=excluded.updated_at",
+            row,
+        )
+    return get_building(bid)
+
+
+def get_building(building_id: str) -> dict | None:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM buildings WHERE building_id = ?",
+                    (building_id,))
+        r = cur.fetchone()
+        return dict(r) if r else None
+
+
+def list_buildings() -> list[dict]:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM buildings ORDER BY updated_at DESC")
+        return [dict(r) for r in cur.fetchall()]
+
+
+# ============================================================
+# Organizations / agencies (task_2gis_2do.md §11.2, §12)
+# ============================================================
+
+def upsert_organization(data: dict) -> dict | None:
+    org_id = str(data.get("org_id") or "").strip()
+    if not org_id:
+        return None
+    row = {
+        "org_id": org_id,
+        "name": str(data.get("name") or ""),
+        "rubrics": "|".join(data.get("rubrics") or []),
+        "rating": data.get("rating"),
+        "review_count": data.get("review_count"),
+        "address": str(data.get("address") or ""),
+        "lat": data.get("lat"),
+        "lon": data.get("lon"),
+        "website": str(data.get("website") or ""),
+        "phones": "|".join(data.get("phones") or []),
+        "parent_org_id": str(data.get("parent_org_id") or ""),
+        "branch_count": data.get("branch_count"),
+        "updated_at": _now(),
+    }
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO organizations (org_id, name, rubrics, rating, "
+            "review_count, address, lat, lon, website, phones, parent_org_id, "
+            "branch_count, updated_at) "
+            "VALUES (:org_id, :name, :rubrics, :rating, :review_count, :address, "
+            ":lat, :lon, :website, :phones, :parent_org_id, :branch_count, :updated_at) "
+            "ON CONFLICT(org_id) DO UPDATE SET name=excluded.name, "
+            "rubrics=excluded.rubrics, rating=excluded.rating, "
+            "review_count=excluded.review_count, address=excluded.address, "
+            "lat=excluded.lat, lon=excluded.lon, website=excluded.website, "
+            "phones=excluded.phones, parent_org_id=excluded.parent_org_id, "
+            "branch_count=excluded.branch_count, updated_at=excluded.updated_at",
+            row,
+        )
+    return get_organization(org_id)
+
+
+def get_organization(org_id: str) -> dict | None:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM organizations WHERE org_id = ?", (org_id,))
+        r = cur.fetchone()
+        return dict(r) if r else None
+
+
+def list_organizations(q: str = "") -> list[dict]:
+    with db_cursor() as cur:
+        if q:
+            like = f"%{q}%"
+            cur.execute(
+                "SELECT * FROM organizations WHERE name LIKE ? OR address LIKE ? "
+                "OR phones LIKE ? ORDER BY updated_at DESC",
+                (like, like, like))
+        else:
+            cur.execute("SELECT * FROM organizations ORDER BY updated_at DESC")
+        return [dict(r) for r in cur.fetchall()]
 
 
 def close_db():

@@ -6,7 +6,6 @@ from parsers.krisha import KrishaParser
 from parsers.olx import OlxParser
 from parsers.kn import KnParser
 from parsers.etagi import EtagiParser
-from parsers.kvartirka import KvartirkaParser
 
 from .loaders import load_fixture
 
@@ -15,7 +14,6 @@ ALL_PARSERS = [
     (OlxParser, "olx"),
     (KnParser, "kn"),
     (EtagiParser, "etagi"),
-    (KvartirkaParser, "kvartirka"),
 ]
 
 
@@ -170,56 +168,3 @@ def test_parser_without_title_still_parses():
     # Fragments (no <title>/<h1>) have nothing to validate against.
     parser = OlxParser()
     assert len(parser.parse(load_fixture("olx"), SearchParams())) == 2
-
-
-def _kv_card(city: str, price_text: str,
-             title: str = "2-комнатная квартира · 65 м² · 3/22 этаж") -> str:
-    return (
-        '<div class="box-house style-list hover-img">'
-        '<div class="image-wrap">'
-        '<a href="/show/10150"><img src="https://kvartirka.kz/p.jpg"></a>'
-        '</div>'
-        '<div class="content">'
-        f'<h5 class="title"><a href="/show/10150">{title}</a></h5>'
-        '<p class="location text-1 flex items-center gap-6">конаева 32</p>'
-        '<div class="description mb-5">сдается квартира</div>'
-        f'<ul class="meta-list flex"><li class="text-1 flex">{city}</li>'
-        '<li class="text-1 flex">12 октября</li></ul>'
-        '<div class="bot flex justify-between items-center">'
-        f'<h5 class="price">{price_text}</h5>'
-        '</div>'
-        '</div>'
-        '</div>'
-    )
-
-
-def _kv_page(*cards: str) -> str:
-    return ('<html><head><title>Kvartirka.kz - Недвижимости</title></head>'
-            f'<body>{"".join(cards)}</body></html>')
-
-
-def test_kvartirka_keeps_almaty_monthly():
-    results = KvartirkaParser().parse(
-        _kv_page(_kv_card("Алматы", "250 000 ₸/мес")), SearchParams())
-    assert len(results) == 1
-    assert results[0].price == 250000
-    assert results[0].title.startswith("2-комнатная")
-
-
-def test_kvartirka_filters_other_city():
-    # The feed is known to mix in Шымкент listings — only Алматы wanted.
-    assert KvartirkaParser().parse(
-        _kv_page(_kv_card("Шымкент", "250 000 ₸/мес")), SearchParams()) == []
-
-
-def test_kvartirka_filters_daily_rental():
-    # "₸/сут" prices are daily rentals, not monthly apartment rent.
-    assert KvartirkaParser().parse(
-        _kv_page(_kv_card("Алматы", "15 000 ₸/сут")), SearchParams()) == []
-
-
-def test_kvartirka_url_almaty_region():
-    # region_id=2 = Алматы (1 = Шымкент). Without it the feed defaults to
-    # Шымкент.
-    url = KvartirkaParser().build_url(SearchParams())
-    assert "region_id=2" in url

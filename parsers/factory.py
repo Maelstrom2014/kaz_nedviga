@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from .base import BaseParser
 from .krisha import KrishaParser
 from .olx import OlxParser
 from .kn import KnParser
 from .etagi import EtagiParser
-from .kvartirka import KvartirkaParser
 from .telegram import TelegramParser
+from .twogis import TwoGisParser
 
 # Working parsers only. The following were removed because the sites are
 # dead or have fundamentally changed:
@@ -21,8 +21,8 @@ PARSER_CLASSES: list[type[BaseParser]] = [
     OlxParser,
     KnParser,
     EtagiParser,
-    KvartirkaParser,
     TelegramParser,
+    TwoGisParser,
 ]
 
 PARSER_REGISTRY: dict[str, type[BaseParser]] = {cls.name: cls for cls in PARSER_CLASSES}

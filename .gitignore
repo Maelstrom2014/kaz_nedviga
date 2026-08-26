@@ -17,7 +17,23 @@ data/settings.json
 cache/
 
 # Logs
+*.log
 parsers_errors.log
+
+# Debug / recon scripts
+tools/
+
+# 2gis recon artifacts
+data/2gis_recon_*
+data/2gis_bundle_*
+data/2gis_realty_*
+data/phone_recon/
+
+# Task notes
+task_*.md
+
+# One-off cleanup script
+remove_kvartirka.py
 
 # Scratch / cleanup scripts
 zz*.py

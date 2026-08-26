@@ -8,7 +8,6 @@ from .etagi import EtagiParser
 from .allrealty import AllrealtyParser
 from .domik import DomikParser
 from .arenda import ArendaParser
-from .kvartirka import KvartirkaParser
 from .models import Listing, SearchParams
 
 __all__ = [
@@ -22,7 +21,6 @@ __all__ = [
     "AllrealtyParser",
     "DomikParser",
     "ArendaParser",
-    "KvartirkaParser",
     "Listing",
     "SearchParams",
 ]

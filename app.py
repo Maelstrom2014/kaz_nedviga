@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import logging
 import json
 import re
@@ -18,6 +19,13 @@ from data.districts import get_districts_json, get_district_list
 from parsers.factory import get_all_parsers, list_sites
 from parsers.base import get_all_parser_stats, reset_parser_stats
 from parsers.models import Listing, SearchParams
+from parsers.proxy import (
+    get_pool as get_proxy_pool,
+    DEFAULT_PROXY_SETTINGS,
+    PROXY_SOURCES,
+    sanitize_proxy_settings,
+    KNOWN_SITES,
+)
 import rates as rates_module
 from export_utils import export_txt, export_pdf
 from db import (
@@ -35,6 +43,8 @@ from db import (
     check_prices as db_check_prices,
     listing_key,
     init_db,
+    list_organizations as db_list_organizations,
+    list_buildings as db_list_buildings,
     reset_db,
 )
 
@@ -69,6 +79,10 @@ init_db()
 # server is coming up.
 threading.Thread(target=rates_module.get_rates, daemon=True, name="rates-prewarm").start()
 
+# The background scheduler is started at the bottom of this module (after
+# load_settings is defined) — see "Start the background scheduler" near
+# the if __name__ == "__main__" block.
+
 app = Flask(__name__, template_folder="templates", static_folder="static")
 # JSON_AS_ASCII was removed in Flask 2.3; ensure_ascii on the JSON provider is
 # the supported way to keep Cyrillic readable in API responses.
@@ -96,15 +110,24 @@ _DEFAULT_SEARCH_DEFAULTS = {
 _DEFAULT_SETTINGS = {"theme": _DEFAULT_THEME,
                      "hide_no_photo": False,
                      "search_defaults": _DEFAULT_SEARCH_DEFAULTS,
-                     "photo_cache_mb": 500,
+                      "photo_cache_mb": 500,
+                      "olx_phone_page_only": False,
+                      "olx_phone_playwright": False,
+                     # Background scheduler: refresh cached listings every N hours.
+                     # Off by default — explicit opt-in (parser.network load).
+                     "scheduler_enabled": False,
+                     "parser_interval_hours": 4,
                      "parser_max_pages": {
                          "krisha.kz": 9,
                          "olx.kz": 6,
                          "kn.kz": 6,
                          "etagi.com": 3,
-                         "kvartirka.kz": 3,
                          "telegram": 3,
-                     }}
+                          "twogis": 3,
+                      },
+                      # Free proxies: fetch from public lists, test them, rotate across parsers.
+                      "proxy": DEFAULT_PROXY_SETTINGS,
+                  }
 
 _SEARCH_DEFAULTS_KEYS = {
     "price_min", "price_max", "rooms", "district",
@@ -118,6 +141,10 @@ _MAX_PAGES_MAX = 30
 # Sane bounds for the photo cache size (MB).
 _PHOTO_CACHE_MB_MIN = 50
 _PHOTO_CACHE_MB_MAX = 10000
+
+# Sane bounds for the background scheduler interval (hours).
+_SCHEDULER_INTERVAL_MIN = 1
+_SCHEDULER_INTERVAL_MAX = 168
 
 
 def load_settings() -> dict:
@@ -151,6 +178,21 @@ def load_settings() -> dict:
     pcm = data.get("photo_cache_mb")
     if not isinstance(pcm, int) or not _PHOTO_CACHE_MB_MIN <= pcm <= _PHOTO_CACHE_MB_MAX:
         data["photo_cache_mb"] = _DEFAULT_SETTINGS["photo_cache_mb"]
+    # Backfill scheduler settings: scheduler_enabled (bool), parser_interval_hours.
+    se = data.get("scheduler_enabled")
+    if not isinstance(se, bool):
+        data["scheduler_enabled"] = False
+    pih = data.get("parser_interval_hours")
+    if not isinstance(pih, int) or not _SCHEDULER_INTERVAL_MIN <= pih <= _SCHEDULER_INTERVAL_MAX:
+        data["parser_interval_hours"] = _DEFAULT_SETTINGS["parser_interval_hours"]
+    # Backfill the twogis parser_max_pages key (added in task_2gis_2do.md).
+    pmp = data.get("parser_max_pages")
+    if isinstance(pmp, dict) and "twogis" not in pmp:
+        pmp["twogis"] = _DEFAULT_SETTINGS["parser_max_pages"]["twogis"]
+        data["parser_max_pages"] = pmp
+    # Backfill proxy settings (free-proxy pipeline); coerce to clean values.
+    data["proxy"] = sanitize_proxy_settings(data.get("proxy"))
+
     return data
 
 
@@ -257,6 +299,10 @@ def api_get_settings():
     # Normalize so clients always see every known key
     data.setdefault("hide_no_photo", False)
     data.setdefault("photo_cache_mb", _DEFAULT_SETTINGS["photo_cache_mb"])
+    data.setdefault("scheduler_enabled", False)
+    data.setdefault("parser_interval_hours", _DEFAULT_SETTINGS["parser_interval_hours"])
+    data.setdefault("proxy", DEFAULT_PROXY_SETTINGS)
+    get_proxy_pool().configure(data.get("proxy"))
     return jsonify(data)
 
 
@@ -271,6 +317,10 @@ def api_set_settings():
         data["theme"] = theme
     if "hide_no_photo" in args:
         data["hide_no_photo"] = bool(args["hide_no_photo"])
+    if "olx_phone_page_only" in args:
+        data["olx_phone_page_only"] = bool(args["olx_phone_page_only"])
+    if "olx_phone_playwright" in args:
+        data["olx_phone_playwright"] = bool(args["olx_phone_playwright"])
     if "photo_cache_mb" in args:
         try:
             pcm = int(args["photo_cache_mb"])
@@ -278,6 +328,15 @@ def api_set_settings():
             pcm = _DEFAULT_SETTINGS["photo_cache_mb"]
         data["photo_cache_mb"] = max(_PHOTO_CACHE_MB_MIN,
                                      min(_PHOTO_CACHE_MB_MAX, pcm))
+    if "scheduler_enabled" in args:
+        data["scheduler_enabled"] = bool(args["scheduler_enabled"])
+    if "parser_interval_hours" in args:
+        try:
+            pih = int(args["parser_interval_hours"])
+        except (TypeError, ValueError):
+            pih = _DEFAULT_SETTINGS["parser_interval_hours"]
+        data["parser_interval_hours"] = max(_SCHEDULER_INTERVAL_MIN,
+                                            min(_SCHEDULER_INTERVAL_MAX, pih))
     if "parser_max_pages" in args:
         pmp = args.get("parser_max_pages")
         if not isinstance(pmp, dict):
@@ -291,12 +350,92 @@ def api_set_settings():
             if _MAX_PAGES_MIN <= n <= _MAX_PAGES_MAX:
                 base[name] = n
         data["parser_max_pages"] = base
+    if "proxy" in args:
+        data["proxy"] = sanitize_proxy_settings(args.get("proxy"))
     save_settings(data)
+    # Apply proxy config to the shared pool immediately.
+    get_proxy_pool().configure(data.get("proxy"))
+    # Apply scheduler config changes to the running daemon immediately.
+    try:
+        import scheduler
+        scheduler.configure(
+            enabled=data.get("scheduler_enabled", False),
+            interval_hours=data.get("parser_interval_hours",
+                                    _DEFAULT_SETTINGS["parser_interval_hours"]),
+        )
+    except Exception as exc:
+        log.warning("[settings] scheduler reconfigure failed: %s", exc)
     return jsonify({"ok": True,
                     "theme": data.get("theme", _DEFAULT_THEME),
                     "hide_no_photo": bool(data.get("hide_no_photo", False)),
                     "photo_cache_mb": data.get("photo_cache_mb", _DEFAULT_SETTINGS["photo_cache_mb"]),
+                    "scheduler_enabled": bool(data.get("scheduler_enabled", False)),
+                    "parser_interval_hours": data.get("parser_interval_hours",
+                                                     _DEFAULT_SETTINGS["parser_interval_hours"]),
                     "parser_max_pages": data.get("parser_max_pages", {})})
+
+
+@app.route("/api/proxy", methods=["GET"])
+def api_proxy_status():
+    """Proxy pool config + status (count, last refresh, per-source stats)."""
+    data = load_settings()
+    pool = get_proxy_pool()
+    pool.configure(data.get("proxy"))
+    st = pool.status()
+    st["config"] = sanitize_proxy_settings(data.get("proxy"))
+    st["sources"] = PROXY_SOURCES
+    st["known_sites"] = list(KNOWN_SITES)
+    st["proxies"] = [e.to_dict() for e in pool.snapshot()]
+    st["errors"] = pool.errors(100)
+    st["usage"] = pool.usage()
+    return jsonify(st)
+
+
+@app.route("/api/proxy", methods=["POST"])
+def api_proxy_update():
+    """Update proxy settings (full or partial) and sync the shared pool."""
+    args = request.get_json(silent=True) or request.form
+    data = load_settings()
+    if "proxy" in args:
+        data["proxy"] = sanitize_proxy_settings(args.get("proxy"))
+    elif args:
+        merged = dict(data.get("proxy") or {})
+        merged.update(args)
+        data["proxy"] = sanitize_proxy_settings(merged)
+    save_settings(data)
+    get_proxy_pool().configure(data.get("proxy"))
+    return jsonify({"ok": True, "config": data["proxy"],
+                    "status": get_proxy_pool().status()})
+
+
+@app.route("/api/proxy/refresh", methods=["POST"])
+def api_proxy_refresh():
+    """Fetch proxy lists from the enabled sources and test which ones work."""
+    args = request.get_json(silent=True) or request.form
+    data = load_settings()
+    if args and "proxy" in args:
+        data["proxy"] = sanitize_proxy_settings(args.get("proxy"))
+    cfg = sanitize_proxy_settings(data.get("proxy"))
+    pool = get_proxy_pool()
+    try:
+        stats = pool.refresh(cfg)
+    except Exception as exc:
+        log.warning("[proxy] refresh failed: %s", exc, exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    save_settings(data)
+    return jsonify({"ok": True, "stats": stats, "status": pool.status()})
+
+
+@app.route("/api/proxy/clear", methods=["POST"])
+def api_proxy_clear():
+    get_proxy_pool().clear()
+    return jsonify({"ok": True, "status": get_proxy_pool().status()})
+
+
+@app.route("/api/proxy/errors/clear", methods=["POST"])
+def api_proxy_clear_errors():
+    get_proxy_pool().clear_errors()
+    return jsonify({"ok": True, "error_count": get_proxy_pool().status()["error_count"]})
 
 
 def _apply_parser_max_pages(parsers: list) -> None:
@@ -306,13 +445,20 @@ def _apply_parser_max_pages(parsers: list) -> None:
     pages. The form's global ``max_pages`` (``params.max_pages > 0``) still
     wins — it is applied uniformly inside ``BaseParser.run()``.
     """
-    pmp = load_settings().get("parser_max_pages", {})
+    settings = load_settings()
+    pmp = settings.get("parser_max_pages", {})
+    page_only = settings.get("olx_phone_page_only", False)
+    playwright = settings.get("olx_phone_playwright", False)
     for p in parsers:
         if p.name in pmp:
             try:
                 p.max_pages = int(pmp[p.name])
             except (TypeError, ValueError):
                 pass
+        if page_only and p.name == "olx.kz":
+            p.phone_endpoint_enabled = False
+        if playwright and p.name == "olx.kz":
+            p.phone_playwright_enabled = True
 
 
 @app.route("/api/search-defaults", methods=["GET"])
@@ -381,6 +527,30 @@ def api_clear_favorites():
 _RESULTS_CACHE = Path(__file__).parent / "data" / "last_results.json"
 
 
+def _run_all_parsers(parsers: list, params: SearchParams) -> list[Listing]:
+    """Run ``parsers`` concurrently against ``params`` and return flat results.
+
+    Shared between the on-demand ``/api/search`` path and the background
+    ``scheduler`` (so both paths behave identically: same workers, same
+    parser-error handling, same logging).
+    """
+    results: list[Listing] = []
+    log.info("[search] dispatching %d parsers%s", len(parsers),
+             f" ({', '.join(p.name for p in parsers)})" if parsers else "")
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(p.run, params): p.name for p in parsers}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                items = fut.result()
+                results.extend(items)
+                log.info("[search] parser %s returned %d results", name, len(items))
+            except Exception as exc:
+                log.warning("[search] parser %s failed: %s", name, exc, exc_info=True)
+    log.info("[search] total %d listings from %d parsers", len(results), len(parsers))
+    return results
+
+
 def _is_apartment_listing(r: dict) -> bool:
     """True when a cached entry carries at least one rental signal
     (price, rooms or area). Entries without any of them — e.g. "free
@@ -425,9 +595,12 @@ def _save_results(results: list[dict]):
     """Save results to cache file, merging with old data."""
     _RESULTS_CACHE.parent.mkdir(parents=True, exist_ok=True)
     prev = _load_prev_results()
+    now_iso = datetime.datetime.now().isoformat(sep=" ", timespec="seconds")
     for r in results:
         key = f"{r.get('source','')}|{r.get('url','')}"
         old = prev.get(key)
+        # Persist first-seen (date added/parsed); backfill pre-existing rows
+        r["first_seen"] = old.get("first_seen") if old and old.get("first_seen") else now_iso
         if old:
             # Track price change
             old_price = old.get("price")
@@ -476,21 +649,18 @@ def api_search():
     if selected_sources:
         parsers = [p for p in parsers if p.name in selected_sources]
 
-    results: list[Listing] = []
-    log.info("[search] dispatching %d parsers%s", len(parsers),
-             f" ({', '.join(p.name for p in parsers)})" if parsers else "")
-    with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = {pool.submit(p.run, params): p.name for p in parsers}
-        for fut in as_completed(futures):
-            name = futures[fut]
-            try:
-                items = fut.result()
-                results.extend(items)
-                log.info("[search] parser %s returned %d results", name, len(items))
-            except Exception as exc:
-                log.warning("[search] parser %s failed: %s", name, exc, exc_info=True)
-    log.info("[search] total %d listings from %d parsers", len(results), len(parsers))
+    get_proxy_pool().clear_usage()
+    results: list[Listing] = _run_all_parsers(parsers, params)
     results.sort(key=lambda x: (x.price is None, x.price or 0))
+
+    # Building/geo enrichment (task_2gis_2do.md §1.2, §11): fill missing
+    # residential_complex / microdistrict / building coords from cached
+    # building records + district polygons. Best-effort, never blocks search.
+    try:
+        from data.buildings import enrich_listings
+        enrich_listings(results)
+    except Exception as exc:
+        log.debug("[search] building enrichment skipped: %s", exc)
 
     # Merge with previous results and save
     result_dicts = [_to_dict(r) for r in results]
@@ -523,11 +693,17 @@ def api_search():
     merged_list.sort(key=lambda r: (r.get("price") is None, r.get("price") or 0))
     merged_list = _filter_no_photo(merged_list)
 
+    _pool = get_proxy_pool()
     return jsonify({
         "total": len(merged_list),
         "results": merged_list,
         "cached_total": len(merged),
         "parser_stats": get_all_parser_stats(),
+        "proxy": {
+            "enabled": _pool.enabled,
+            "count": len(_pool),
+            "sites": _pool.usage(),
+        },
     })
 
 
@@ -573,6 +749,67 @@ def api_clear_results():
     return jsonify({"ok": True, "message": "Кэш результатов очищен"})
 
 
+# ============================================================
+# Background scheduler: refresh listings automatically every N hours.
+# ============================================================
+@app.route("/api/scheduler", methods=["GET"])
+def api_get_scheduler():
+    """Status snapshot: enabled, interval, last/next run timestamps."""
+    try:
+        import scheduler
+        return jsonify(scheduler.get_state())
+    except Exception as exc:
+        log.warning("[scheduler] status failed: %s", exc)
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.route("/api/scheduler", methods=["POST"])
+def api_set_scheduler():
+    """Update scheduler configuration: {enabled, interval_hours}.
+
+    Persists to settings.json so the change survives restarts, then
+    signals the running daemon thread immediately.
+    """
+    args = request.get_json(silent=True) or request.form
+    data = load_settings()
+    if "enabled" in args:
+        data["scheduler_enabled"] = bool(args["enabled"])
+    if "interval_hours" in args:
+        try:
+            pih = int(args["interval_hours"])
+        except (TypeError, ValueError):
+            pih = _DEFAULT_SETTINGS["parser_interval_hours"]
+        data["parser_interval_hours"] = max(_SCHEDULER_INTERVAL_MIN,
+                                            min(_SCHEDULER_INTERVAL_MAX, pih))
+    save_settings(data)
+    try:
+        import scheduler
+        state = scheduler.configure(
+            enabled=data["scheduler_enabled"],
+            interval_hours=data["parser_interval_hours"],
+        )
+        return jsonify(state)
+    except Exception as exc:
+        log.warning("[scheduler] configure failed: %s", exc)
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
+@app.route("/api/scheduler/run", methods=["POST"])
+def api_run_scheduler_now():
+    """Trigger an immediate scheduler run (manual trigger).
+
+    Returns the state snapshot immediately; the run happens asynchronously.
+    The UI should poll ``GET /api/scheduler`` to see ``running=true`` →
+    ``last_run_status`` afterwards.
+    """
+    try:
+        import scheduler
+        return jsonify(scheduler.run_now())
+    except Exception as exc:
+        log.warning("[scheduler] manual run failed: %s", exc)
+        return jsonify({"error": str(exc)[:200]}), 500
+
+
 @app.route("/api/results")
 def api_get_results():
     """Return cached search results (without re-running parsers)."""
@@ -594,6 +831,25 @@ def api_get_results():
 @app.route("/api/districts")
 def api_districts():
     return jsonify(get_districts_json())
+
+
+@app.route("/api/2gis/agencies")
+def api_2gis_agencies():
+    """Discovered real-estate agencies (task_2gis_2do.md §12).
+
+    Agencies are NOT listings — a separate endpoint mirrors how
+    ``api_parser_status`` exposes parser telemetry. Supports free-text
+    filtering by name/address/phone.
+    """
+    q = (request.args.get("q") or "").strip()
+    agencies = db_list_organizations(q)
+    return jsonify({"agencies": agencies, "total": len(agencies)})
+
+
+@app.route("/api/2gis/buildings")
+def api_2gis_buildings():
+    """Cached building records (task_2gis_2do.md §1.2, §11)."""
+    return jsonify({"buildings": db_list_buildings()})
 
 
 @app.route("/api/heatmap", methods=["POST"])
@@ -810,7 +1066,7 @@ def api_list_favorites():
         price = f.get("price")
         if price is not None:
             f["price_str"] = f"{price:,} {f.get('currency', 'тг')}".replace(",", " ")
-            f["price_rub"] = round(price * rub_rate, 2)
+            f["price_rub"] = float(round(price * rub_rate))
             f["price_usd"] = round(price * usd_rate, 2)
         else:
             f["price_str"] = "—"
@@ -954,6 +1210,25 @@ def _port_owner_pids(port: int) -> str:
             pids.add(parts[4])
     return ", ".join(sorted(pids))
 
+
+# Start the background scheduler if it was enabled in settings.
+# Skip the autostart when running under pytest — tests that need the
+# scheduler configure it explicitly (and would falsely trigger real parser
+# network runs at import time otherwise).
+if "pytest" not in sys.modules:
+    try:
+        import scheduler
+        scheduler.start_from_settings(load_settings())
+    except Exception as exc:
+        log.warning("[scheduler] failed to start: %s", exc)
+
+
+# Sync the shared free-proxy pool with persisted settings at startup so a
+# restart picks up the enabled flag + sources without a manual settings call.
+try:
+    get_proxy_pool().configure(load_settings().get("proxy"))
+except Exception as _exc:  # pragma: no cover - startup best-effort
+    log.warning("[proxy] startup configure failed: %s", _exc)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
