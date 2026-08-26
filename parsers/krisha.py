@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import Optional
 
 from bs4 import BeautifulSoup
 
@@ -42,6 +43,18 @@ class KrishaParser(BaseParser):
         if page > 1:
             url += f"&page={page}"
         return url
+
+    def detect_status(self, html: str) -> Optional[str]:
+        """Krisha marks archived / possibly-relevant listings with a visible
+        banner. Detect it so the favorites card can show (and persist) it."""
+        if not html:
+            return None
+        low = html.lower()
+        if "в архиве" in low:
+            return "В архиве"
+        if "может быть неактуальным" in low:
+            return "Объявление может быть неактуальным"
+        return super().detect_status(html)
 
     def extract_detail_price(self, html: str, url: str) -> tuple:
         """Krisha detail pages embed listing data in a ``<script id="jsdata">``

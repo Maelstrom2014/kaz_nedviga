@@ -470,6 +470,14 @@ class BaseParser:
         # the endpoint and trigger a soft rate-limit (OLX returns 400).
         self._phone_endpoint_lock = threading.Lock()
         self._phone_last_call = 0.0
+        # Block detection: OLX's /phones API has a limited per-IP budget
+        # of clean calls, then returns 400 for the rest of the window.
+        # Track consecutive 4xx responses and back off (the block
+        # outlasts short retries, so hammering only extends it).
+        # _phone_consec_fail resets on a 200; _phone_block_until pauses
+        # all endpoint calls until it passes.
+        self._phone_consec_fail = 0
+        self._phone_block_until = 0.0
 
     # ---- URL building -------------------------------------------------
     # build_url() is defined below with pagination support;
@@ -515,6 +523,14 @@ class BaseParser:
     phone_endpoint_retries: ClassVar[int] = 0
     phone_endpoint_cooldown: ClassVar[float] = 2.0
     phone_endpoint_min_interval: ClassVar[float] = 0.0
+    # Jitter (fraction) applied to the min interval so the call cadence
+    # is not perfectly regular (a metronomic cadence is a bot signal).
+    phone_endpoint_jitter: ClassVar[float] = 0.3
+    # Block detection: after this many CONSECUTIVE 4xx/5xx responses the
+    # endpoint is treated as soft-blocked for the IP and calls pause for
+    # phone_block_cooldown seconds (the block outlasts short retries).
+    phone_block_threshold: ClassVar[int] = 4
+    phone_block_cooldown: ClassVar[float] = 120.0
     # Page-only phone mode. When False, _enrich_phone skips the click-to-reveal
     # XHR endpoints (OLX /phones, kn.kz /card/phone, krisha.kz ajaxPhones) and
     # relies solely on the page source (tel:/wa.me links, JSON state, visible
@@ -804,6 +820,13 @@ class BaseParser:
         """
         return False
 
+    def detect_status(self, html: str) -> Optional[str]:
+        """Detect a listing status shown on the detail page (e.g. archived /
+        possibly not relevant). Returns a human-readable label or None when
+        the listing looks active. Parsers override this for site-specific
+        status phrases."""
+        return None
+
     def extract_detail_price(self, html: str, url: str) -> tuple:
         """Extract (price, lat, lon) from a detail page.
 
@@ -984,6 +1007,76 @@ class BaseParser:
         phone, _ = self._extract_detail_phone(html)
         return phone
 
+    def _extract_phone_multi(self, html: str) -> list:
+        """Last-resort phone candidate generation. Tries several
+        independent algorithms for a number hidden behind a reveal
+        button / anti-spam overlay. Returns a list of raw candidate
+        strings (NOT validated); the caller validates each with the
+        standard phone acceptance checks."""
+        if not html:
+            return []
+        cands = []
+
+        def add(v):
+            if v and v not in cands:
+                cands.append(v)
+
+        # A) tel: / sms: / whatsapp links (incl. hidden in attrs)
+        for rx in (r'tel:([+\d][\d\s\-().]{6,18}\d)',
+                   r'sms:([+\d][\d\s\-().]{6,18}\d)',
+                   r'(?:wa\.me/|whatsapp://send\?phone=|api\.whatsapp\.com/send\?phone=)(\+?\d{8,15})'):
+            for m in re.finditer(rx, html, re.I):
+                add(m.group(1))
+
+        # B) data-* contact attributes
+        for m in re.finditer(
+                r'data-(?:phone|tel|telephone|contact|number|mobile|phone_number)'
+                r'\s*=\s*["\']([+\d][\d\s\-().]{6,18}\d)["\']', html, re.I):
+            add(m.group(1))
+
+        # C) JSON / JS state keys holding a phone (string or bare number)
+        for m in re.finditer(
+                r'["\'](?:phone|telephone|phone_number|phone_number_full|'
+                r'contact_phone|mobile|tel|phone_digits|phone_value)["\']'
+                r'\s*:\s*["\']?([+\d][\d\s\-().]{7,18}\d)["\']?', html, re.I):
+            add(m.group(1))
+
+        # D) base64-encoded blobs
+        for m in re.finditer(r'["\']([A-Za-z0-9+/]{16,}={0,2})["\']', html):
+            tok = m.group(1)
+            try:
+                dec = base64.b64decode(tok + "=" * (-len(tok) % 4),
+                                        validate=False).decode("utf-8", "ignore")
+            except Exception:
+                continue
+            for pm in re.finditer(r'[+\d][\d\s\-().]{8,18}\d', dec):
+                add(pm.group(0))
+
+        # E) fromCharCode(...) arrays
+        for m in re.finditer(r'fromCharCode\(([\d,\s]{4,300})\)', html):
+            try:
+                codes = [int(x) for x in m.group(1).split(",") if x.strip().isdigit()]
+                dec = "".join(chr(c) for c in codes if 32 <= c < 127)
+            except Exception:
+                continue
+            for pm in re.finditer(r'[+\d][\d\s\-().]{8,18}\d', dec):
+                add(pm.group(0))
+
+        # F) HTML-entity-decoded, zero-width-stripped text, keyword-anchored
+        try:
+            import html as _htmllib
+            cleaned = _htmllib.unescape(html)
+            cleaned = re.sub('[\u200b\u200c\u200d\ufeff\u00a0]', ' ', cleaned)
+            for m in re.finditer(
+                    r'\b(?:phone|tel|contact|whatsapp|viber|'
+                    r'телефон|звон|контакт|связь|мобил)'
+                    r'[^<>{}]{0,50}?([+\d][\d\s\-().]{8,18}\d)', cleaned, re.I):
+                add(m.group(1))
+        except Exception:
+            pass
+
+        return cands
+
     def _extract_detail_phone(self, html: str) -> tuple[str, str]:
         """Like extract_detail_phone, but also reports the winning stage.
 
@@ -1047,6 +1140,11 @@ class BaseParser:
             phone = self._valid_phone(m.group(1))
             if ok(phone):
                 return phone, "raw_keyword"
+        # 9) multi-algorithm fallback (reveal-button / anti-spam phones)
+        for _cand in self._extract_phone_multi(html):
+            _p = self._valid_phone(_cand)
+            if _p and ok(_p):
+                return _p, "multi_algo"
         return "", ""
 
     def _record_phone_outcome(self, listing: Listing, outcome: str) -> None:
@@ -1194,6 +1292,10 @@ class BaseParser:
         """
         if not url:
             return ""
+        # Soft-blocked (too many consecutive 4xx): skip the HTTP call so
+        # we stop feeding the rate-limiter and the block can lift.
+        if time.monotonic() < self._phone_block_until:
+            return ""
         attempts = 1 + self.phone_endpoint_retries
         resp = None
         for attempt in range(attempts):
@@ -1203,9 +1305,14 @@ class BaseParser:
                 # Serialize across the _enrich_photos thread pool: the reveal
                 # API rate-limits rapid concurrent calls (OLX -> 400).
                 with self._phone_endpoint_lock:
+                    interval = self.phone_endpoint_min_interval
+                    if interval and self.phone_endpoint_jitter:
+                        interval *= 1.0 + random.uniform(
+                            -self.phone_endpoint_jitter,
+                            self.phone_endpoint_jitter)
                     elapsed = time.monotonic() - self._phone_last_call
-                    if elapsed < self.phone_endpoint_min_interval:
-                        time.sleep(self.phone_endpoint_min_interval - elapsed)
+                    if elapsed < interval:
+                        time.sleep(interval - elapsed)
                     self._phone_last_call = time.monotonic()
                     resp = session.get(url, timeout=self.timeout, headers={
                         "Referer": referer,
@@ -1218,8 +1325,22 @@ class BaseParser:
                                self.name, url[:160], type(exc).__name__)
                 return ""
             if resp.status_code == 200:
+                self._phone_consec_fail = 0
                 break
-            # 400/429/503 are transient (rate-limit); retry if budget left.
+            # 400/403/429/503 = soft-block (rate-limit / bot flag). Track
+            # consecutive failures; once the threshold is hit, pause calls
+            # (the block outlasts the short retry cooldown, so hammering it
+            # only extends the block).
+            if resp.status_code in (400, 403, 429, 503):
+                self._phone_consec_fail += 1
+                if self._phone_consec_fail >= self.phone_block_threshold:
+                    self._phone_block_until = (
+                        time.monotonic() + self.phone_block_cooldown)
+                    phone_log.info(
+                        "[%s] endpoint %s | blocked after %d consecutive %s "
+                        "responses, pausing %.0fs",
+                        self.name, url[:160], self._phone_consec_fail,
+                        resp.status_code, self.phone_block_cooldown)
             if (resp.status_code in (400, 429, 503)
                     and attempt < attempts - 1):
                 phone_log.info(

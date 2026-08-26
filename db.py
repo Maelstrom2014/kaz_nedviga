@@ -111,6 +111,7 @@ _MIGRATIONS = [
     ("favorites", "owner_probability",   "REAL"),
     ("favorites", "quality_score",       "INTEGER"),
     ("favorites", "duplicate_group_id",  "TEXT NOT NULL DEFAULT ''"),
+    ("favorites", "check_status",        "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -286,6 +287,15 @@ def update_phone(listing_key: str, phone: str) -> None:
         )
 
 
+def update_check_status(listing_key: str, status: str) -> None:
+    """Store the listing status shown on the detail page (e.g. "В архиве")."""
+    with db_cursor() as cur:
+        cur.execute(
+            "UPDATE favorites SET check_status = ? WHERE listing_key = ?",
+            (status, listing_key),
+        )
+
+
 def update_coords(listing_key: str, lat: Optional[float], lon: Optional[float]) -> None:
     """Update lat/lon on a favorite (from re-parsed detail page)."""
     with db_cursor() as cur:
@@ -357,13 +367,14 @@ def check_prices() -> list[dict]:
     from parsers.factory import get_all_parsers
     from parsers.models import SearchParams
 
-    def _entry(fav, new_price, changed, error=None):
+    def _entry(fav, new_price, changed, error=None, status=None):
         item = {
             "listing_key": fav["listing_key"],
             "title": fav["title"],
             "old_price": fav["price"],
             "new_price": new_price,
             "changed": changed,
+            "status": status or "",
         }
         if error:
             item["error"] = error
@@ -386,13 +397,19 @@ def check_prices() -> list[dict]:
             # BaseParser.fetch: randomized anti-bot headers, SSL/403 retries,
             # encoding fixes — instead of a bare requests.get.
             html = parser.fetch(url)
+            # Detect a status shown on the detail page (e.g. krisha "В
+            # архиве" / "Объвлащение может быть неактуальным"). Persist it on
+            # the favorite so the card can show it (survives reloads).
+            status = parser.detect_status(html) or ""
+            if status != (fav.get("check_status") or ""):
+                update_check_status(fav["listing_key"], status)
             # Removed/expired listings can be served with HTTP 200 (OLX's
             # "inactive ad" page). is_unavailable() is overridden per parser;
             # for OLX it checks the ABSENCE of live-ad data — the i18n phrase
             # "больше не доступно" sits in the JS bundle of every page, so a
             # substring match marks live ads as gone.
             if parser.is_unavailable(html):
-                updated.append(_entry(fav, None, False, "объявление больше не доступно"))
+                updated.append(_entry(fav, None, False, "объявление больше не доступно", status=status))
                 continue
             # Detail pages have a different structure than search card pages.
             # Use extract_detail_price() which each parser overrides with
@@ -403,7 +420,7 @@ def check_prices() -> list[dict]:
                 # Page loaded but no price found — the ad changed structure
                 # or the price was removed. (Gone ads fail earlier: HTTP error
                 # or the OLX "больше не доступно" page.)
-                updated.append(_entry(fav, None, False, "цена не найдена на странице"))
+                updated.append(_entry(fav, None, False, "цена не найдена на странице", status=status))
                 continue
             if price != fav["price"]:
                 update_price(fav["listing_key"], price, fav.get("currency", "тг"))
@@ -420,7 +437,7 @@ def check_prices() -> list[dict]:
                     update_phone(fav["listing_key"], phone)
             except Exception:
                 pass
-            updated.append(_entry(fav, price, price != fav["price"]))
+            updated.append(_entry(fav, price, price != fav["price"], status=status))
         except Exception as exc:
             updated.append(_entry(fav, None, False, str(exc)[:200]))
         # Be polite: no burst of requests to the same site.

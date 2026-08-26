@@ -417,6 +417,7 @@
     .fav-card:hover { border-color: var(--accent); }
     .fav-card.unavailable { opacity: .55; border-color: var(--danger); border-style: dashed; }
     .fav-badge-unavailable { display: inline-block; background: var(--danger); color: #fff; font-size: .68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 8px; vertical-align: middle; }
+    .fav-status-line { margin-top: 4px; font-size: .78rem; font-weight: 700; color: var(--accent); }
     .fav-card-img { width: 100px; height: 80px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--card); }
     .fav-card-body { flex: 1; min-width: 0; }
     .fav-card-title { font-size: .9rem; font-weight: 600; margin-bottom: 4px; }
@@ -1330,7 +1331,18 @@
       applyClientFilters();
     });
 
-    function renderResults(results, total) {
+    function phoneKey(p) { return (p || '').replace(/\D/g, ''); }
+function buildPhoneCounts(list) {
+  const counts = {};
+  (list || []).forEach(it => { const k = phoneKey(it.phone); if (k) counts[k] = (counts[k] || 0) + 1; });
+  return counts;
+}
+function phoneRepeatHtml(item, counts) {
+  const c = counts ? (counts[phoneKey(item.phone)] || 0) : 0;
+  return c > 1 ? ' <span class="phone-repeat">[' + c + ']</span>' : '';
+}
+function renderResults(results, total) {
+  const phoneCounts = buildPhoneCounts(results);
       const grid = document.getElementById('resultsGrid');
       if (total === undefined) total = results.length;
       document.getElementById('resultsTitle').textContent = `Результаты: ${total} объявлений`;
@@ -1385,7 +1397,7 @@
                 ${floorStr ? `<span class="card-chip">${escapeHtml(floorStr)}</span>` : ''}
               </div>
               ${r.address ? `<div style="font-size:.8rem;color:var(--text-dim);margin-top:6px;">${escapeHtml(r.address)}</div>` : ''}
-              ${r.phone ? `<div class="listing-phone">Тел: <a href="tel:${r.phone.replace(/[^\d+]/g, '')}">${escapeHtml(r.phone)}</a></div>` : ''}
+              ${r.phone ? `<div class="listing-phone">Тел: <a href="tel:${r.phone.replace(/[^\d+]/g, '')}">${escapeHtml(r.phone)}</a>${phoneRepeatHtml(r, phoneCounts)}</div>` : ''}
               ${descPreview ? `<div class="desc-preview">${descPreview}</div>` : ''}
               ${(r.date_published || r.date_updated) ? `<div class="date-line">${r.date_published ? `<span>Опубликовано: ${r.date_published}</span>` : ''}${r.date_updated ? `<span>Обновлено: ${r.date_updated}</span>` : ''}</div>` : ''}
               <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
@@ -2028,6 +2040,7 @@
     }
 
     function renderFavorites(favs) {
+  const favPhoneCounts = buildPhoneCounts(favs);
       const list = document.getElementById('favoritesList');
       const header = document.querySelector('.favorites-header h2');
       header.textContent = `Избранные квартиры (${favs.length}) — оценки, комментарии и мониторинг цен`;
@@ -2063,10 +2076,11 @@
             ${photo}
             <div class="fav-card-body">
               <div class="fav-card-title">${escapeHtml(f.title)}${unavailableBadge}</div>
+              ${f.check_status ? `<div class="fav-status-line">${escapeHtml(f.check_status)}</div>` : ''}
               <div class="fav-card-price">${f.price_str}</div>
       <div style="font-size:.75rem;color:var(--text-dim);margin-top:2px;">${f.price && f.price_rub != null ? f.price_rub.toLocaleString('ru-RU', {maximumFractionDigits:0}) + ' руб · $' + (f.price_usd || 0).toFixed(0) : ''}</div>
               <div class="fav-card-meta">${escapeHtml(f.address || '—')} · ${f.source}</div>
-              ${f.phone ? `<div class="listing-phone">Тел: <a href="tel:${f.phone.replace(/[^\d+]/g, '')}">${escapeHtml(f.phone)}</a></div>` : ''}
+              ${f.phone ? `<div class="listing-phone">Тел: <a href="tel:${f.phone.replace(/[^\d+]/g, '')}">${escapeHtml(f.phone)}</a>${phoneRepeatHtml(f, favPhoneCounts)}</div>` : ''}
               ${(f.date_published || f.date_updated) ? `<div class="date-line">${f.date_published ? `<span>Опубликовано: ${f.date_published}</span>` : ''}${f.date_updated ? `<span>Обновлено: ${f.date_updated}</span>` : ''}</div>` : ''}
               <div class="fav-info-row">
                 <div class="stars" data-key="${f.listing_key}">${stars}</div>
@@ -2109,6 +2123,7 @@
     document.getElementById('checkPricesBtn').addEventListener('click', async function() {
       const btn = this;
       btn.disabled = true; btn.textContent = 'Проверка...';
+      let failed = false;
       try {
         const resp = await fetch('/api/favorites/check-prices', {method: 'POST'});
         const data = await resp.json();
@@ -2118,28 +2133,14 @@
         (data.results || []).forEach(r => {
           if (r.listing_key) lastCheckResults[r.listing_key] = r;
         });
-        const unavailable = (data.results || []).filter(r => r.error);
-        let msg = `Проверено: ${data.checked}. Изменений цен: ${data.changed_count}.`;
-        if (unavailable.length) {
-          msg += `\nНедоступно: ${unavailable.length}.`;
-        }
-        const changed = (data.results || []).filter(r => r.changed);
-        if (changed.length) {
-          msg += '\n\n' + changed.map(c => {
-            const o = c.old_price ? c.old_price.toLocaleString('ru-RU') : '—';
-            const n = c.new_price ? c.new_price.toLocaleString('ru-RU') : '—';
-            return `• ${c.title.slice(0,40)}: ${o} → ${n}`;
-          }).join('\n');
-        }
-        if (unavailable.length) {
-          msg += '\n\nНедоступные:\n' + unavailable.map(c =>
-            `• ${c.title.slice(0,40)}: ${c.error}`).join('\n');
-        }
-        alert(msg);
+        // Results appear on the cards (price, unavailable badge, status line).
+        // No separate alert window for the check results.
       } catch (err) {
-        alert('Ошибка: ' + err.message);
+        failed = true;
+        btn.textContent = 'Ошибка: ' + err.message;
       } finally {
-        btn.disabled = false; btn.textContent = 'Проверить цены';
+        btn.disabled = false;
+        if (!failed) btn.textContent = 'Проверить цены';
         loadFavorites();
       }
     });
