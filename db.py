@@ -398,7 +398,7 @@ def check_prices() -> list[dict]:
             # encoding fixes — instead of a bare requests.get.
             html = parser.fetch(url)
             # Detect a status shown on the detail page (e.g. krisha "В
-            # архиве" / "Объвлащение может быть неактуальным"). Persist it on
+            # архиве" / "Объявление может быть неактуальным"). Persist it on
             # the favorite so the card can show it (survives reloads).
             status = parser.detect_status(html) or ""
             if status != (fav.get("check_status") or ""):

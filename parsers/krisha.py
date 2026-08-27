@@ -50,9 +50,13 @@ class KrishaParser(BaseParser):
         if not html:
             return None
         low = html.lower()
-        if "в архиве" in low:
+        # Authoritative: krisha embeds the listing state in the page JSON
+        # ("status": "archive" for archived ads, "live" for active ones).
+        m = re.search(r'"status"\s*:\s*"(\w+)"', html)
+        if m and m.group(1).lower() == "archive":
             return "В архиве"
-        if "может быть неактуальным" in low:
+        # Fallback: the visible "Объявление может быть неактуальным" banner.
+        if "is-archived-text" in low or "может быть неактуальным" in low:
             return "Объявление может быть неактуальным"
         return super().detect_status(html)
 

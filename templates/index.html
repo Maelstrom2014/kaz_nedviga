@@ -418,6 +418,7 @@
     .fav-card.unavailable { opacity: .55; border-color: var(--danger); border-style: dashed; }
     .fav-badge-unavailable { display: inline-block; background: var(--danger); color: #fff; font-size: .68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 8px; vertical-align: middle; }
     .fav-status-line { margin-top: 4px; font-size: .78rem; font-weight: 700; color: var(--accent); }
+    .fav-badge-status { display: inline-block; background: var(--warning); color: #fff; font-size: .68rem; font-weight: 700; padding: 2px 8px; border-radius: 4px; margin-left: 8px; vertical-align: middle; }
     .fav-card-img { width: 100px; height: 80px; border-radius: 8px; object-fit: cover; flex-shrink: 0; background: var(--card); }
     .fav-card-body { flex: 1; min-width: 0; }
     .fav-card-title { font-size: .9rem; font-weight: 600; margin-bottom: 4px; }
@@ -2067,6 +2068,9 @@ function renderResults(results, total) {
         const unavailableBadge = isUnavailable
           ? `<span class="fav-badge-unavailable" title="${escapeHtml(check.error)}">недоступно</span>`
           : '';
+        const statusBadge = f.check_status
+          ? `<span class="fav-badge-status" title="${escapeHtml(f.check_status)}">${escapeHtml(f.check_status)}</span>`
+          : '';
         const cardClass = isUnavailable ? 'fav-card unavailable' : 'fav-card';
         const stars = [1,2,3,4,5].map(n =>
           `<span class="star ${n <= f.rating ? 'active' : ''}" onclick="rateFavorite('${f.listing_key}', ${n})">★</span>`
@@ -2075,8 +2079,7 @@ function renderResults(results, total) {
           <div class="${cardClass}" style="margin-bottom:12px;">
             ${photo}
             <div class="fav-card-body">
-              <div class="fav-card-title">${escapeHtml(f.title)}${unavailableBadge}</div>
-              ${f.check_status ? `<div class="fav-status-line">${escapeHtml(f.check_status)}</div>` : ''}
+              <div class="fav-card-title">${escapeHtml(f.title)}${unavailableBadge}${statusBadge}</div>
               <div class="fav-card-price">${f.price_str}</div>
       <div style="font-size:.75rem;color:var(--text-dim);margin-top:2px;">${f.price && f.price_rub != null ? f.price_rub.toLocaleString('ru-RU', {maximumFractionDigits:0}) + ' руб · $' + (f.price_usd || 0).toFixed(0) : ''}</div>
               <div class="fav-card-meta">${escapeHtml(f.address || '—')} · ${f.source}</div>
