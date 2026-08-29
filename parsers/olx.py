@@ -276,20 +276,41 @@ class OlxParser(BaseParser):
         """OLX hides the number behind "Показать телефон" and keeps no
         endpoint string in the page source, but the ad ID is present
         (ad-id= links / JSON-LD sku). The number itself is served by the
-        offers API for the page's own session."""
+        offers API for the page's own session.
+
+        Two variants are tried in order: the dedicated /phones endpoint
+        (small payload) and the offer-detail endpoint (fallback, in case
+        /phones is soft-blocked or omits the number)."""
         found = super()._discover_phone_endpoints(html)
         ad_id = self._extract_ad_id(html)
         if ad_id:
-            url = "%s/api/v1/offers/%s/phones" % (self.base_url, ad_id)
-            if url not in found:
-                found.append(url)
+            for p in ("/phones", ""):
+                url = "%s/api/v1/offers/%s%s" % (self.base_url, ad_id, p)
+                if url not in found:
+                    found.append(url)
         return found
 
     @staticmethod
-    def _extract_ad_id(html: str) -> str | None:
-        for rx in (re.compile(r'ad-id=(\d{6,})'),
-                   re.compile(r'"sku"\s*:\s*"(\d{6,})"')):
+    def _extract_ad_id(html: str, url: str | None = None) -> str | None:
+        """Numeric OLX ad id used by the offers API.
+
+        Checked in order of specificity: the promote-link ad-id= param,
+        the JSON-LD sku, the embedded state's offerId / adId / data-ad-id
+        fields, then a numeric id in the listing URL. Returns None when
+        nothing matches."""
+        for rx in (
+            re.compile(r'ad-id=(\d{6,})'),
+            re.compile(r'"sku"\s*:\s*"(\d{6,})"'),
+            re.compile(r'"offerId"\s*:\s*"?(?P<ad_id>\d{6,})'),
+            re.compile(r'offer[_-]?id["\s:=]+["\']?(\d{6,})'),
+            re.compile(r'adId["\s:=]+["\']?(\d{6,})'),
+            re.compile(r'data-ad-id=["\']?(\d{6,})'),
+        ):
             m = rx.search(html or "")
+            if m:
+                return m.group(1)
+        if url:
+            m = re.search(r'/(\d{6,})(?=[/?#]|$)', url)
             if m:
                 return m.group(1)
         return None
@@ -301,22 +322,27 @@ class OlxParser(BaseParser):
             return digits
         return ""
 
-    def _phone_via_endpoint(self, url: str) -> tuple[str | None, bool]:
+    def _phone_via_endpoint(self, url: str, ad_id: str | None = None) -> tuple[str | None, bool]:
         """Fetch the number from the offers /phones API (fast path).
 
         Returns (phone, alive): the cleaned number (or None) and whether
         the offer still looks live. alive=False when the detail page is
         not 200 or has no ad id (removed offer); alive=True when the
-        endpoint call itself failed or returned nothing (retryable).
+        endpoint call itself failed or returned nothing (retryable). When
+        ad_id is supplied the detail page is not re-fetched.
         """
         import time
         try:
             from curl_cffi import requests as cr
-            resp = cr.get(url, impersonate="chrome", timeout=self.timeout,
-                          headers={"Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"})
-        except Exception:
+        except ImportError:
             return None, True
-        ad_id = self._extract_ad_id(resp.text) if resp.status_code == 200 else None
+        if ad_id is None:
+            try:
+                resp = cr.get(url, impersonate="chrome", timeout=self.timeout,
+                              headers={"Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8"})
+            except Exception:
+                return None, True
+            ad_id = self._extract_ad_id(resp.text, url) if resp.status_code == 200 else None
         if not ad_id:
             return None, False
         now = time.time()
@@ -324,27 +350,119 @@ class OlxParser(BaseParser):
         if now - last < self.phone_endpoint_min_interval:
             time.sleep(self.phone_endpoint_min_interval - (now - last))
         try:
-            pr = cr.get("https://www.olx.kz/api/v1/offers/%s/phones" % ad_id,
+            pr = cr.get("%s/api/v1/offers/%s/phones" % (self.base_url, ad_id),
                         impersonate="chrome", timeout=self.timeout)
         except Exception:
             return None, True
         self._pw_phone_ts = time.time()
         if pr.status_code != 200:
             return None, True
-        try:
-            data = pr.json()
-        except ValueError:
-            return None, True
-        phones: list = []
-        if isinstance(data, dict):
-            inner = data.get("data")
-            if isinstance(inner, dict):
-                phones = inner.get("phones") or []
-        for p in phones:
-            found = self._clean_phone(str(p))
-            if found:
-                return found, True
+        body = pr.text if isinstance(pr.text, str) else None
+        if body is None:
+            try:
+                body = json.dumps(pr.json())
+            except Exception:
+                return None, True
+        for phone in self._phones_from_api_json(body):
+            if phone and phone not in self.phone_blacklist:
+                return phone, True
         return None, True
+
+    @staticmethod
+    def _phones_from_api_json(text) -> list[str]:
+        """Phone numbers embedded in an OLX offers-API JSON body.
+
+        Understands the shapes OLX serves - a "phones" array of strings
+        or objects, a scalar phone/tel value, and numbers nested under
+        contact/seller keys - and falls back to a raw scan when the body
+        is not valid JSON. Returns cleaned 10/11-digit numbers, contact
+        keys first, in document order.
+        """
+        if not isinstance(text, str):
+            try:
+                text = json.dumps(text)
+            except Exception:
+                return []
+        found: list = []
+
+        def emit(value) -> None:
+            if value is None:
+                return
+            phone = OlxParser._clean_phone(str(value))
+            if phone and phone not in found:
+                found.append(phone)
+
+        def phoneish(key) -> bool:
+            low = str(key).lower()
+            return any(k in low for k in ("phone", "tel", "contact", "seller"))
+
+        def emit_under(value) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        for v in item.values():
+                            emit(v)
+                    else:
+                        emit(item)
+            elif isinstance(value, dict):
+                for v in value.values():
+                    emit(v)
+            else:
+                emit(value)
+
+        def targeted(node) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if phoneish(key):
+                        emit_under(value)
+                    targeted(value)
+            elif isinstance(node, list):
+                for item in node:
+                    targeted(item)
+
+        def all_scalars(node) -> None:
+            if isinstance(node, dict):
+                for v in node.values():
+                    all_scalars(v)
+            elif isinstance(node, list):
+                for v in node:
+                    all_scalars(v)
+            elif isinstance(node, (str, int)):
+                emit(node)
+
+        data = None
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError):
+            data = None
+        if data is not None:
+            targeted(data)
+            if not found:
+                all_scalars(data)
+        if not found:
+            m = re.search(r'"phones"\s*:\s*\[([^\]]*)\]', text)
+            if m:
+                for part in re.findall(r'"([^"]+)"', m.group(1)):
+                    emit(part)
+            for m in re.finditer(
+                    r'"(?:phone|tel|telephone|mobile)"\s*:\s*"([^"]{6,20})"', text):
+                emit(m.group(1))
+        return found
+
+    def _phone_from_embedded_state(self, html: str) -> str:
+        """Phone number from OLX's embedded JSON state (page source).
+
+        OLX preloads offer state into inline <script> JSON blobs. When a
+        number is present there (some layouts / seller types) this
+        recovers it without a round-trip to the offers API.
+        """
+        for m in re.finditer(
+                r"""<script[^>]*type=["']application/(?:ld\+)?json["']>(.*?)</script>""",
+                html or "", re.I | re.S):
+            for phone in self._phones_from_api_json(m.group(1)):
+                if phone and phone not in self.phone_blacklist:
+                    return phone
+        return ""
 
     def _phone_via_playwright(self, url: str) -> str | None:
         """Render the detail page in a headless browser and read the
@@ -392,13 +510,14 @@ class OlxParser(BaseParser):
             return None
         return None
 
-    def _fetch_phone_playwright(self, listing: Listing, url: str) -> str | None:
+    def _fetch_phone_playwright(self, listing: Listing, url: str,
+                                ad_id: str | None = None) -> str | None:
         """Cycle the /phones endpoint and the headless browser until a
         number is extracted or the attempts are exhausted. The winning
         method is recorded in phone_extraction.log."""
         import time
         for attempt in range(1, self.phone_max_attempts + 1):
-            phone, alive = self._phone_via_endpoint(url)
+            phone, alive = self._phone_via_endpoint(url, ad_id)
             if phone:
                 listing.phone = phone
                 self._record_phone_outcome(listing, "found:olx_endpoint")
@@ -437,6 +556,8 @@ class OlxParser(BaseParser):
             phone = ""
         if not phone:
             phone = self._clean_phone(html)
+        if not phone:
+            phone = self._phone_from_embedded_state(html)
         if phone:
             listing.phone = phone
             self._record_phone_outcome(listing, "found:page_source")
@@ -445,7 +566,8 @@ class OlxParser(BaseParser):
                            listing.url, listing.phone)
             return
         if listing.url:
-            self._fetch_phone_playwright(listing, listing.url)
+            ad_id = self._extract_ad_id(html, listing.url)
+            self._fetch_phone_playwright(listing, listing.url, ad_id)
 
     def _fetch_detail_photos(self, listing: Listing) -> list[str]:
         """Fetch the detail page and return all gallery photo URLs.

@@ -620,7 +620,8 @@ class TestOlxPhoneEndpoint:
         parser = OlxParser()
         html = '<a href="/purchase/promote/?ad-id=399002995">x</a>'
         assert parser._discover_phone_endpoints(html) == [
-            "https://www.olx.kz/api/v1/offers/399002995/phones"]
+            "https://www.olx.kz/api/v1/offers/399002995/phones",
+            "https://www.olx.kz/api/v1/offers/399002995"]
 
     def test_enrich_phone_via_endpoint(self):
         parser = OlxParser()
@@ -912,7 +913,7 @@ class TestOlxPhoneReveal:
         with patch.object(parser, "_fetch_phone_playwright",
                           return_value=None) as m:
             parser._resolve_phone(listing, "<html><body>no phone here</body></html>")
-        m.assert_called_once_with(listing, self.URL)
+        m.assert_called_once_with(listing, self.URL, None)
         assert not listing.phone
 
     def test_resolve_phone_via_cycle(self):
@@ -927,3 +928,86 @@ class TestOlxPhoneReveal:
         pl.info.assert_any_call(
             "[%s] %s | found %s | method=olx_endpoint attempt=%d",
             "OLX-1", self.URL, "87089420700", 1)
+
+
+class TestOlxPhoneAlgorithms:
+    """New OLX phone-extraction algorithms (2026-08): ad-id sources,
+    offers-API JSON shapes, and embedded JSON state."""
+
+    # ---- _extract_ad_id: more sources than ad-id= links / sku ----
+    def test_ad_id_from_url(self):
+        assert OlxParser._extract_ad_id(
+            "", "https://www.olx.kz/d/x/399002995") == "399002995"
+
+    def test_ad_id_from_offer_id_state(self):
+        assert OlxParser._extract_ad_id(
+            '{"offerId":"399002995"}') == "399002995"
+
+    def test_ad_id_from_data_attr(self):
+        assert OlxParser._extract_ad_id(
+            '<div data-ad-id="399002995"></div>') == "399002995"
+
+    def test_ad_id_link_beats_url(self):
+        assert OlxParser._extract_ad_id(
+            '<a href="?ad-id=111111">x</a>',
+            "https://www.olx.kz/222222222") == "111111"
+
+    def test_ad_id_none_when_short(self):
+        assert OlxParser._extract_ad_id(
+            "", "https://www.olx.kz/d/12345.html") is None
+
+    # ---- _phones_from_api_json: many offers-API shapes ----
+    def test_api_phones_array_strings(self):
+        assert OlxParser._phones_from_api_json(
+            '{"data": {"phones": ["870 894 20700"]}}') == ["87089420700"]
+
+    def test_api_phones_array_objects(self):
+        assert OlxParser._phones_from_api_json(
+            '{"data": {"phones": [{"phone": "+7 705 123 45 67"}]}}'
+        ) == ["77051234567"]
+
+    def test_api_scalar_contact_key(self):
+        assert OlxParser._phones_from_api_json(
+            '{"data": {"contactPhone": "8777123456"}}') == ["8777123456"]
+
+    def test_api_invalid_json_regex_fallback(self):
+        assert OlxParser._phones_from_api_json(
+            'garbage "phone":"87051234567" more') == ["87051234567"]
+
+    def test_api_no_phone(self):
+        assert OlxParser._phones_from_api_json(
+            '{"data": {"price": 100}}') == []
+
+    def test_api_dedupes_same_number(self):
+        assert OlxParser._phones_from_api_json(
+            '{"data": {"phones": ["870 894 20700", "87089420700"]}}'
+        ) == ["87089420700"]
+
+    # ---- _phone_from_embedded_state ----
+    def test_embedded_state_finds_phone(self):
+        p = OlxParser()
+        html = ('<script type="application/json">'
+                '{"data": {"phones": ["870 894 20700"]}}</script>')
+        assert p._phone_from_embedded_state(html) == "87089420700"
+
+    def test_embedded_state_ld_json(self):
+        p = OlxParser()
+        html = ('<script type="application/ld+json">'
+                '{"telephone": "+7 705 123 45 67"}</script>')
+        assert p._phone_from_embedded_state(html) == "77051234567"
+
+    def test_embedded_state_none(self):
+        p = OlxParser()
+        assert p._phone_from_embedded_state("<html>no json</html>") == ""
+
+    # ---- _discover_phone_endpoints: offer-detail fallback ----
+    def test_endpoints_include_offer_detail(self):
+        p = OlxParser()
+        assert p._discover_phone_endpoints(
+            '<a href="?ad-id=399002995">x</a>') == [
+            "https://www.olx.kz/api/v1/offers/399002995/phones",
+            "https://www.olx.kz/api/v1/offers/399002995"]
+
+    def test_endpoints_no_ad_id(self):
+        p = OlxParser()
+        assert p._discover_phone_endpoints("<html>no id</html>") == []
