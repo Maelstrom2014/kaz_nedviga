@@ -928,6 +928,7 @@
             iconSize: [120, 16], iconAnchor: [60, 8]
           })
         });
+        marker.on('click', () => focusCard(i));
         marker.bindPopup(`
           <div style="min-width:190px;max-width:260px;">
             ${photoHtml}
@@ -955,6 +956,17 @@
       document.querySelectorAll('.listing-card.active').forEach(el => el.classList.remove('active'));
       const card = document.querySelector(`.listing-card[data-idx="${idx}"]`);
       if (card) card.classList.add('active');
+      activeCardIdx = idx;
+    }
+
+    // Reverse of focusMarker: marker clicked -> bring its card into view.
+    function focusCard(idx) {
+      document.querySelectorAll('.listing-card.active').forEach(el => el.classList.remove('active'));
+      const card = document.querySelector(`.listing-card[data-idx="${idx}"]`);
+      if (card) {
+        card.classList.add('active');
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
       activeCardIdx = idx;
     }
 
