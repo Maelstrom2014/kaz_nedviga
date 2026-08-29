@@ -1,4 +1,294 @@
-﻿# ДомАлматы — Поиск аренды жилья в Алматы
+﻿# English
+
+# DomAlmaty — Rental housing search for Almaty
+
+A web app for searching apartment rentals across 6 Almaty real-estate sites, with an interactive map, a price heat map, favorites, price monitoring, and PDF/TXT export.
+
+## Features
+
+### Architecture: parser and search engine
+
+- **Parser** ("Analyzer" tab): a "Search" button, source and pages-per-site selection. Crawls the chosen sites and fills the listings cache (broad crawl — no filters at collection time, so filters don't drop data before it is cached).
+- **Search engine** ("Search and map" tab): filters (rooms, price, district, floor, area, text) are applied instantly on the client side against the cache — a 150 ms debounce on any form change. Re-parsing is never triggered.
+- **Separation of concerns**: data collection (parser) → filtering and display (search engine).
+
+### Parsing (6 sites)
+
+| Site | Details |
+|---|---|
+| **krisha.kz** | 9 pages, real-time coordinates from JSON, photo gallery (all photos) |
+| **olx.kz** | 6 pages, coordinates with a bounding-box filter (Almaty only), gallery from the swiper |
+| **kn.kz** | 6 pages, photo gallery from the detail page |
+| **etagi.com** | 3 pages, SSR JSON-state parsing (~30 listings), gallery from the CDN |
+| **telegram** | 4 Almaty channels (`t.me/s/<channel>`), Kazakh-Russian glossary, listing filter |
+
+- **Parallel parsing** of all sites (ThreadPoolExecutor, 5 threads).
+- **Anti-bot protection**: `curl_cffi` with browser TLS impersonation (Chrome), randomized User-Agent, delays between pages.
+- **WAF bypass**: sticky sessions, TLS-profile rotation, fallback to `requests` when blocked.
+- **Real coordinates**: krisha, olx (with an Almaty filter), kn, etagi extract lat/lon from the listing pages.
+- **Point-in-polygon** district matching by coordinates (more reliable than text search).
+
+### Search and map
+
+- **Filters** (applied instantly to the cache, no new parsing): room count (0–4+), price, district, floor, area, text query.
+- **Result cache**: merging previous and new results (listings don't disappear between searches).
+- **Price-change tracking**: `NEW` badges for new listings, price-change badges.
+- **Interactive map** (Leaflet + OpenStreetMap):
+  - Boundaries of Almaty's 8 districts as polygons
+  - Markers with prices in 3 currencies (KZT / RUB / USD, compact format: `250k / 48k / $532`)
+  - Popups with photo, price, address and link
+  - **"Favorites only"** button — shows only saved listings on the map
+  - Clicking a card focuses the map (flyTo + openPopup); clicking a price marker highlights and scrolls to its card
+- **Price heat map** by district, with a property-type filter:
+  - Heat points — showing price zones
+  - Districts (polygons) — colored, with the listing count and average price
+  - Exact per-district count: point-in-polygon (by coordinates) + a word-boundary text fallback
+  - Unmatched listings — a separate category (not dumped into Almalinskiy)
+
+### On-disk image cache
+
+- **Automatic caching** of all photos during parsing into `cache/photos/` (SHA1 of the URL).
+- **WebP storage**: downloaded photos are converted to WebP (quality=85) before being written to disk — 30–50% less space than JPEG. When exporting to PDF, WebP is decoded through Pillow and converted to JPEG for embedding.
+- **Background precache** in a daemon thread — does not block the return of search results.
+- **Instant export**: repeated PDF/TXT exports take photos from the cache (0 network requests).
+- **WebP format**: conversion to JPEG via Pillow (krisha serves WebP, the cache stores WebP).
+- **Referer per domain**: correct headers for each CDN (krisha, olx, kn, etagi, telesco).
+- **Retry + timeout**: 3 attempts, 15 s timeout, retry on 429/503.
+- **LRU eviction**: automatic cleanup of old files when the limit is exceeded.
+- **Configurable limit**: in the UI (50–10000 MB, default 500 MB).
+- **"Clear cache" button** in the settings.
+
+### Favorites and monitoring
+
+- **Save listings** to favorites (SQLite).
+- **Ratings** (1–5 stars) and **comments**.
+- **Price history**: charts of price changes over time (Chart.js).
+- **Price check**: re-parse a favorite's URL to refresh its price (and detect "archived / not actual" status).
+- **Favorites export** to TXT, vertical PDF, horizontal PDF.
+
+### Prices in 3 currencies
+
+- **Exchange rates** KZT → RUB / USD / EUR (auto-refresh every 10 minutes, disk cache).
+- **Prices on cards and markers** in all three currencies.
+- **Price per m²** on the cards.
+
+### Interface
+
+- **4 tabs**:
+  - **Search and map** — the search engine: filters on the left narrow the cached results in real time (cards + markers + district colors), without re-parsing
+  - **Favorites and monitoring** — saved listings, ratings, comments, price charts
+  - **Analyzer** — run parsing ("Search" button, source selection, pages per site) + detailed per-parser statistics
+  - **Settings** — defaults, exchange rates, image cache, theme, data management
+- **6 color themes**: Midnight, Carbon, Forest (dark) + Daylight, Sand, Rose (light).
+- **Default search parameters** (stored on the server).
+- **Pages per site**: per-parser max_pages setting (1–30).
+- **Parser analyzer**: status, time, result count, errors for each parser.
+- **Results export** to TXT and PDF (portrait + landscape) with all photos.
+- **Photo carousel** on the listing cards.
+- **Data management**: clear favorites, reset the database, clear the results cache, clear the image cache.
+
+## Installation
+
+### Requirements
+
+- Python 3.11+
+- Windows / macOS / Linux
+
+### Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+Dependencies:
+
+- `flask` — web server
+- `requests` — HTTP requests
+- `curl_cffi` — browser TLS impersonation (WAF bypass)
+- `beautifulsoup4` + `lxml` — HTML parsing
+- `fpdf2` — PDF generation
+- `Pillow` — image processing, WebP conversion for the cache
+- `pytest` — tests
+
+### Run
+
+```bash
+python app.py
+```
+
+Or via a batch file (Windows):
+
+```cmd
+run.bat
+```
+
+Open http://localhost:5000
+
+## Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+**536 tests**: parsers (6 sites), models, utilities, factory, export, API, districts, exchange rates, favorites, settings, photo enrichment, coordinates.
+
+```bash
+# Quick check
+python -m pytest -q
+
+# Detailed output
+python -m pytest tests/test_photo_enrichment.py -v --tb=short
+```
+
+## Project structure
+
+```
+kaz_nedviga/
+├── app.py                        Flask application, API endpoints, heatmap
+├── export_utils.py               Export TXT/PDF, on-disk photo cache
+├── rates.py                      Exchange rates (KZT -> RUB/USD/EUR)
+├── db.py                         SQLite layer (favorites, price history)
+│
+├── parsers/
+│   ├── __init__.py
+│   ├── base.py                   Base parser, anti-bot, photo enrichment + precache
+│   ├── models.py                 SearchParams, Listing (with lat/lon)
+│   ├── factory.py                Parser registry and factory (6)
+│   ├── krisha.py                 krisha.kz (+ coordinates, + gallery)
+│   ├── olx.py                    olx.kz (+ coordinates with bbox filter, + gallery)
+│   ├── kn.py                     kn.kz (+ photo gallery)
+│   ├── etagi.py                  etagi.com (+ gallery from CDN, SVG state)
+│   └── telegram.py               Telegram (4 channels, KZ->RU glossary)
+│
+├── data/
+│   ├── __init__.py
+│   ├── districts.py              8 Almaty districts with polygons
+│   ├── settings.json             Theme, parameters, max_pages, photo_cache_mb
+│   ├── last_results.json         Search results cache
+│   ├── favorites.db              SQLite (favorites + price history)
+│   └── rates.json                Exchange rates cache
+│
+├── cache/
+│   └── photos/                   On-disk image cache (SHA1 of URL)
+│
+├── templates/
+│   └── index.html                 SPA: map, results, favorites, settings
+│
+├── tests/
+│   ├── fixtures/                  HTML fixtures for tests
+│   ├── test_app.py                Flask API
+│   ├── test_parsers.py            Parser tests
+│   ├── test_parsers_extended.py
+│   ├── test_parser_engine.py      Engine: paging, partial, sticky sessions
+│   ├── test_parser_analyzer.py    Parser statistics
+│   ├── test_photo_enrichment.py   Photo enrichment, OLX/etagi coordinates
+│   ├── test_search_engine.py      Heatmap, district matching, point-in-polygon
+│   ├── test_settings.py           Settings, photo_cache_mb
+│   ├── test_export.py             Export TXT/PDF
+│   ├── test_favorites_api.py      Favorites API
+│   ├── test_telegram.py           Telegram parser (29 tests)
+│   └── ...
+│
+├── requirements.txt
+├── run.bat                        Run on Windows
+└── README.md
+```
+
+## API
+
+### Search and map
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/` | GET | Main page (SPA) |
+| `/api/search` | POST | Search across sites (merged results + parser stats) |
+| `/api/districts` | GET | Almaty's 8 districts with coordinates and polygons |
+| `/api/heatmap` | POST | Price heat map by district (point-in-polygon matching) |
+
+### Export
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/export/txt` | POST | Export results to TXT |
+| `/api/export/pdf` | POST | Export to PDF (portrait/landscape, all photos) |
+
+### Image cache
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/photo-cache` | GET | Size and file count of the cache |
+| `/api/photo-cache/clear` | POST | Clear the image cache |
+
+### Favorites
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/favorites` | GET | List of favorites with price history |
+| `/api/favorites` | POST | Add to favorites |
+| `/api/favorites/<key>` | DELETE | Remove from favorites |
+| `/api/favorites/<key>/rate` | PUT | Rating (1–5 stars) |
+| `/api/favorites/<key>/comment` | PUT | Comment |
+| `/api/favorites/<key>/history` | GET | Price history + chart |
+| `/api/favorites/check-prices` | POST | Price check for all favorites |
+| `/api/favorites/clear` | POST | Clear favorites + cache |
+
+### Settings
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/settings` | GET | Current settings (theme, max_pages, photo_cache_mb, ...) |
+| `/api/settings` | POST | Save settings |
+| `/api/results/clear` | POST | Clear the results cache |
+| `/api/database/reset` | POST | Delete the DB + cache |
+
+### Currencies
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/rates` | GET | Exchange rates (RUB, USD, EUR) |
+| `/api/rates/refresh` | POST | Force-refresh the rates |
+
+## Almaty districts
+
+Almalinskiy — Zhetysuskiy — Auezovskiy — Medeuskiy — Turksibskiy — Nauryzbaiyskiy — Bostandykskiy — Alatau
+
+Each district has:
+- Center coordinates (lat, lon)
+- Boundary polygon (for point-in-polygon matching)
+- Description (streets, boundaries)
+
+## Technologies
+
+| Component | Technology |
+|---|---|
+| Backend | Flask, BeautifulSoup4, lxml, SQLite |
+| Frontend | Leaflet.js, leaflet.heat, Chart.js, vanilla JS |
+| Parsing | requests, curl_cffi (TLS impersonation), ThreadPoolExecutor |
+| Anti-bot | randomized headers, sticky sessions, WAF fallback |
+| Photo cache | on-disk SHA1, WebP storage, LRU eviction, Pillow (WebP→JPEG) |
+| Export | fpdf2 (PDF with embedded photos), TXT |
+| Testing | pytest (536 tests) |
+
+## Architecture
+
+```
+                    Frontend (index.html)
+        [ Search and map ] [ Favorites ] [ Analyzer ] [ Settings ]
+        filters + map      + charts      + parser     + cache
+                \             |             |            /
+                 \            |             |           /
+                      Flask API (app.py)
+     /api/search  /api/heatmap  /api/favorites  /api/settings
+                  \            |             /
+    [ parsers/ ]   [ export ]  [ db.py ]     [ rates.py ]
+    6 parsers       PDF/TXT     SQLite        KZT -> RUB/
+    krisha/olx/     + photo     favorites +   USD/EUR
+    kn/etagi/       cache       price history
+    telegram
+```
+
+<!-- ===== English translation ends; original Russian below ===== -->
+# ДомАлматы — Поиск аренды жилья в Алматы
 
 Веб-приложение для поиска аренды квартир по 6 сайтам недвижимости Алматы с интерактивной картой, тепловой картой цен, избранным, мониторингом цен и экспортом в PDF/TXT.
 
