@@ -186,7 +186,8 @@ def _execute_once() -> None:
         # Import here to avoid circulars: app imports us (scheduler), so we
         # must not import app at module load.
         from app import _run_all_parsers  # type: ignore
-        from app import _save_results, _to_dict, load_settings  # type: ignore
+        from app import (_save_results, _to_dict, load_settings,
+                         _check_cached_cards, _write_results_cache)  # type: ignore
         from parsers.factory import get_all_parsers  # type: ignore
         from parsers.models import SearchParams  # type: ignore
 
@@ -217,7 +218,15 @@ def _execute_once() -> None:
 
         results = _run_all_parsers(parsers, params)
         result_dicts = [_to_dict(r) for r in results]
-        _save_results(result_dicts)
+        merged = _save_results(result_dicts)
+        # Re-check cached cards (not re-fetched this run) for validity so the
+        # UI can mark removed/expired ads. Bounded to keep runs responsive.
+        current_keys = {f"{r.get('source','')}|{r.get('url','')}" for r in result_dicts}
+        cached_cards = [r for r in merged.values()
+                        if f"{r.get('source','')}|{r.get('url','')}" not in current_keys]
+        if cached_cards:
+            _check_cached_cards(cached_cards, {p.name: p for p in get_all_parsers()})
+            _write_results_cache(merged)
 
         with _lock:
             _state.last_run_at = started_at

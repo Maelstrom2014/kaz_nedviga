@@ -616,6 +616,79 @@ def _save_results(results: list[dict]):
     return prev
 
 
+def _write_results_cache(data: dict) -> None:
+    """Persist the merged results dict to the cache file."""
+    _RESULTS_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    _RESULTS_CACHE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+# How many cached (not re-fetched this run) cards to re-check for validity per
+# search. Bounds the added latency; the rest are picked up on later runs.
+MAX_CACHE_CHECKS_PER_RUN = 30
+
+
+def _check_cached_cards(cards: list[dict], parsers: dict,
+                        limit: int = MAX_CACHE_CHECKS_PER_RUN,
+                        max_age_hours: float = 6) -> int:
+    """Re-check a bounded subset of cached cards for validity.
+
+    Mirrors the favorites price-check: fetch each URL, read the on-page status
+    and whether the ad is gone. Mutates the card dicts in place
+    (``check_status`` / ``unavailable`` / ``checked_at``). Cards checked within
+    ``max_age_hours`` are skipped so the work spreads over runs. Returns the
+    number of cards checked this run.
+    """
+    import time
+
+    now = datetime.datetime.now()
+    max_age = max_age_hours * 3600
+    candidates = []
+    for r in cards:
+        if not r.get("url") or r.get("source") not in parsers:
+            continue
+        checked_at = r.get("checked_at")
+        if checked_at:
+            try:
+                ca = datetime.datetime.fromisoformat(checked_at)
+                if (now - ca).total_seconds() < max_age:
+                    continue  # checked recently — leave it for a later run
+            except Exception:
+                pass
+        candidates.append(r)
+    # Never-checked first, then least-recently-checked, then a stable tie-break.
+    candidates.sort(
+        key=lambda r: (r.get("checked_at") or "", r.get("source", ""), r.get("url", ""))
+    )
+    to_check = candidates[:limit]
+    if not to_check:
+        return 0
+
+    def _check_one(r):
+        parser = parsers[r["source"]]
+        try:
+            html = parser.fetch(r["url"])
+            r["unavailable"] = bool(parser.is_unavailable(html))
+            status = (parser.detect_status(html) or "").strip()
+            if status:
+                r["check_status"] = status
+            else:
+                r.pop("check_status", None)
+        except Exception:
+            # Fetch failed (404 / network): the ad can't be verified as live.
+            r["unavailable"] = True
+            r["check_status"] = "не удалось проверить"
+        r["checked_at"] = now.isoformat(sep=" ", timespec="seconds")
+        time.sleep(0.2)  # be gentle to the source
+        return 1
+
+    # Fetch in a small pool so a bounded subset takes only a few seconds even
+    # without a proxy, while still spreading requests to each source.
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        return sum(ex.map(_check_one, to_check))
+
+
 # One-shot signals computed for a specific search run. They stay in the cache
 # file (tests rely on that) but must not be served back as "current" badges —
 # on the next run or a page reload they would be stale forever.
@@ -684,12 +757,20 @@ def api_search():
     # apartments don't disappear from the UI on the next search.
     current_keys = {f"{r.get('source','')}|{r.get('url','')}" for r in result_dicts}
     merged_list = []
+    cached_cards = []
     for key, r in merged.items():
         if key not in current_keys:
             # Not re-fetched in this run: drop one-shot badges from the
             # previous run, otherwise "NEW"/"CHANGED" would stick forever.
             _strip_volatile_flags([r])
+            cached_cards.append(r)
         merged_list.append(r)
+    # Re-check a bounded subset of cached cards for validity (removed/expired
+    # ads) and mark them on the card — the same info the favorites show.
+    # Persist the results so the badges survive a reload.
+    if cached_cards:
+        _check_cached_cards(cached_cards, {p.name: p for p in get_all_parsers()})
+        _write_results_cache(merged)
     merged_list.sort(key=lambda r: (r.get("price") is None, r.get("price") or 0))
     merged_list = _filter_no_photo(merged_list)
 
