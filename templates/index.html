@@ -85,6 +85,7 @@
    --text: #f1f5f9; --text-dim: #94a3b8; --border: #475569;
 }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { overflow-x: clip; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
@@ -249,6 +250,26 @@
       font-size: .65rem; font-weight: 700; padding: 2px 8px;
       border-radius: 4px; z-index: 6;
     }
+    .listing-card.unavailable { opacity: .6; border-color: var(--danger); border-style: dashed; }
+    .badge-unavailable {
+      position: absolute; top: 10px; left: 10px;
+      background: var(--danger); color: #fff;
+      font-size: .65rem; font-weight: 700; padding: 2px 8px;
+      border-radius: 4px; z-index: 6;
+    }
+    .badge-check-status {
+      position: absolute; top: 48px; left: 10px;
+      background: var(--warning); color: #fff;
+      font-size: .65rem; font-weight: 700; padding: 2px 8px;
+      border-radius: 4px; z-index: 6; max-width: calc(100% - 20px);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .sort-select {
+      background: var(--card); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 4px 8px; font-size: .8rem; cursor: pointer;
+    }
+    .sort-select:focus { border-color: var(--accent); outline: none; }
     .listing-body { padding: 14px; }
     .listing-title {
       font-size: .95rem; font-weight: 600; margin-bottom: 6px;
@@ -276,6 +297,7 @@
     .district-label { pointer-events: none; }
     #searchTab.map-right.active {
       display: grid; grid-template-columns: minmax(0, 1fr) minmax(560px, 1.15fr); gap: 20px; align-items: start;
+      width: calc(100% + 20px + max(0px, (100vw - 1600px) / 2));
     }
     #searchTab.map-right .map-section {
       grid-column: 2; grid-row: 1 / -1; position: sticky; top: 20px; align-self: start;
@@ -286,7 +308,7 @@
     #searchTab.map-right #map { flex: 1; height: auto; min-height: 400px; }
     #searchTab.map-right .results-grid { grid-column: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     @media (max-width: 1400px) {
-      #searchTab.map-right.active { grid-template-columns: 1fr; padding-right: 0; }
+      #searchTab.map-right.active { grid-template-columns: 1fr; padding-right: 0; width: 100%; }
       #searchTab.map-right .map-section {
         grid-column: 1; grid-row: auto; position: static; max-height: none;
       }
@@ -593,6 +615,11 @@
         <div>
           <div class="results-header">
             <h2 id="resultsTitle">Результаты: 0 объявлений</h2>
+            <select id="dateSort" class="sort-select" title="Сортировка по дате" onchange="applyClientFilters()">
+              <option value="">Сортировка: по цене</option>
+              <option value="asc">Дата: старые → новые</option>
+              <option value="desc">Дата: новые → старые</option>
+            </select>
             <div class="export-buttons" id="exportButtons" style="display:none;">
               <button class="btn-export" id="clearResultsBtn" onclick="clearResults()" style="border-color:var(--danger);color:var(--danger);">Очистить кэш</button>
               <button class="btn-export" id="exportTxt">TXT</button>
@@ -1281,6 +1308,18 @@
         }
         return true;
       });
+      // Sort by date (forward/reverse) when a date-sort option is selected.
+      // ISO YYYY-MM-DD dates sort correctly as plain strings; undated last.
+      const dateSort = (document.getElementById('dateSort') || {}).value || '';
+      if (dateSort) {
+        displayedResults = displayedResults.slice().sort((a, b) => {
+          const da = a.date_updated || a.date_published || '';
+          const db = b.date_updated || b.date_published || '';
+          if (da === db) return 0;
+          if (da < db) return dateSort === 'asc' ? -1 : 1;
+          return dateSort === 'asc' ? 1 : -1;
+        });
+      }
       renderResults(displayedResults, displayedResults.length);
       document.getElementById('exportButtons').style.display = displayedResults.length ? 'flex' : 'none';
       try { drawListingMarkers(); } catch(mErr) { console.error('drawListingMarkers:', mErr); }
@@ -1391,14 +1430,23 @@ function renderResults(results, total) {
         let priceBadge = '';
         if (r.price_changed && r.prev_price != null) {
           const diff = r.price - r.prev_price;
-          const sign = diff > 0 ? '+' : '';
+          const sign = diff >= 0 ? '+' : '';
           priceBadge = `<div class="badge-price-change">цена: ${sign}${diff.toLocaleString('ru-RU')}</div>`;
         }
+        // Validity check for cached cards: mark removed/expired ads, like favorites.
+        let checkBadge = '';
+        if (r.unavailable) {
+          checkBadge += `<div class="badge-unavailable">недоступно</div>`;
+        }
+        if (r.check_status) {
+          checkBadge += `<div class="badge-check-status" title="${escapeHtml(r.check_status)}">${escapeHtml(r.check_status)}</div>`;
+        }
         return `
-          <div class="listing-card" data-idx="${i}" onclick="focusMarker(${i})">
+          <div class="listing-card ${r.unavailable ? 'unavailable' : ''}" data-idx="${i}" onclick="focusMarker(${i})">
             <button class="btn-fav ${isSaved ? 'saved' : ''}" onclick="event.stopPropagation(); toggleFavorite(${i})" title="Сохранить в избранное">${isSaved ? '★' : '☆'}</button>
             ${newBadge}
             ${priceBadge}
+            ${checkBadge}
             ${photoHtml}
             <div class="listing-body">
               <div class="listing-title">${escapeHtml(r.title)}</div>
