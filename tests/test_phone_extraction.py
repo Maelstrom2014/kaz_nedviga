@@ -620,8 +620,7 @@ class TestOlxPhoneEndpoint:
         parser = OlxParser()
         html = '<a href="/purchase/promote/?ad-id=399002995">x</a>'
         assert parser._discover_phone_endpoints(html) == [
-            "https://www.olx.kz/api/v1/offers/399002995/phones",
-            "https://www.olx.kz/api/v1/offers/399002995"]
+            "https://www.olx.kz/api/v1/offers/399002995/phones"]
 
     def test_enrich_phone_via_endpoint(self):
         parser = OlxParser()
@@ -1000,13 +999,12 @@ class TestOlxPhoneAlgorithms:
         p = OlxParser()
         assert p._phone_from_embedded_state("<html>no json</html>") == ""
 
-    # ---- _discover_phone_endpoints: offer-detail fallback ----
-    def test_endpoints_include_offer_detail(self):
+    # ---- _discover_phone_endpoints: /phones only (offer-detail dead) ----
+    def test_endpoints_only_phones(self):
         p = OlxParser()
         assert p._discover_phone_endpoints(
             '<a href="?ad-id=399002995">x</a>') == [
-            "https://www.olx.kz/api/v1/offers/399002995/phones",
-            "https://www.olx.kz/api/v1/offers/399002995"]
+            "https://www.olx.kz/api/v1/offers/399002995/phones"]
 
     def test_endpoints_no_ad_id(self):
         p = OlxParser()

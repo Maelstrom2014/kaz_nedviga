@@ -478,6 +478,10 @@ class BaseParser:
         # all endpoint calls until it passes.
         self._phone_consec_fail = 0
         self._phone_block_until = 0.0
+        # Proxy URL -> monotonic time of its last successful reveal call.
+        # The reveal budget is per client IP, so a proxy that just returned
+        # a number is skipped until its budget can plausibly have refilled.
+        self._phone_proxy_ok: dict[str, float] = {}
 
     # ---- URL building -------------------------------------------------
     # build_url() is defined below with pagination support;
@@ -519,13 +523,16 @@ class BaseParser:
     # calls — once _enrich_photos fans out to a 6-thread pool, concurrent
     # calls burst-fire it and the site soft-blocks (OLX: 400). The instance
     # lock (_phone_endpoint_lock) serializes calls across threads; the min
-    # interval caps throughput; retries recover transient 400/429/503.
-    phone_endpoint_retries: ClassVar[int] = 0
+    # interval caps throughput.
     phone_endpoint_cooldown: ClassVar[float] = 2.0
     phone_endpoint_min_interval: ClassVar[float] = 0.0
     # Jitter (fraction) applied to the min interval so the call cadence
     # is not perfectly regular (a metronomic cadence is a bot signal).
     phone_endpoint_jitter: ClassVar[float] = 0.3
+    # Per-proxy post-success cooldown. The reveal API budget is per client
+    # IP (~1 success per 2-3 min on OLX), so a proxy that just yielded a
+    # number is skipped for this long and calls rotate to a fresh exit IP.
+    phone_proxy_cooldown: ClassVar[float] = 150.0
     # Block detection: after this many CONSECUTIVE 4xx/5xx responses the
     # endpoint is treated as soft-blocked for the IP and calls pause for
     # phone_block_cooldown seconds (the block outlasts short retries).
@@ -1277,6 +1284,50 @@ class BaseParser:
                     return found
         return found
 
+    def _phone_proxy_hot(self, key: str) -> bool:
+        """True while the proxy's per-IP reveal budget is (probably) spent."""
+        last = self._phone_proxy_ok.get(key)
+        return (last is not None
+                and (time.monotonic() - last) < self.phone_proxy_cooldown)
+
+    def _note_phone_proxy_spent(self, pk: dict) -> None:
+        """Mark an exit IP's reveal budget spent (success) or the exit burnt
+        (403 / connect failure): skip it for phone_proxy_cooldown seconds."""
+        key = pk.get("https") or pk.get("http") or ""
+        if key:
+            self._phone_proxy_ok[key] = time.monotonic()
+
+    def _phone_proxy_tries(self) -> list[dict]:
+        """Rotated proxy picks for phone endpoint calls.
+
+        The reveal API rate-limits per client IP, so every call should use
+        a fresh exit IP. Returns up to three random pool proxies that are
+        not in their post-success cooldown; direct (``{}``) only when the
+        pool is disabled or empty. When every pick is still cooling down,
+        one hot pick is returned (a cheap 400 beats skipping the call)."""
+        first = self._proxy_kwargs()
+        if not first:
+            return [{}]
+        picks: list[dict] = []
+        seen: set[str] = set()
+        last = first
+        for _ in range(8):
+            pk = self._proxy_kwargs() or last
+            last = pk
+            key = pk.get("https") or pk.get("http") or ""
+            if not key:
+                return [{}]
+            if key not in seen:
+                seen.add(key)
+                if not self._phone_proxy_hot(key):
+                    picks.append(pk)
+            if len(picks) >= 3 or len(seen) >= 8:
+                break
+        # Direct (no proxy) always gets the last slot: its own per-IP
+        # budget refills within minutes and must keep being harvested.
+        picks.append({})
+        return picks
+
     def fetch_phone_endpoint(
         self,
         session: requests.Session,
@@ -1296,11 +1347,17 @@ class BaseParser:
         # we stop feeding the rate-limiter and the block can lift.
         if time.monotonic() < self._phone_block_until:
             return ""
-        attempts = 1 + self.phone_endpoint_retries
+        # Rotate exit IPs across attempts: the reveal budget is per IP, so
+        # retrying through the same proxy only re-hits an empty bucket.
+        # The sticky page session carries no proxies (they are per-request
+        # in _fetch_cffi), so they must be passed explicitly here too.
+        # Every chain entry gets its own attempt — a dead proxy or an
+        # empty bucket must not prevent the next exit IP from being tried.
+        tries = self._phone_proxy_tries()
         resp = None
-        for attempt in range(attempts):
+        for attempt, pk in enumerate(tries):
             if attempt:
-                time.sleep(self.phone_endpoint_cooldown * attempt)
+                time.sleep(self.phone_endpoint_cooldown)
             try:
                 # Serialize across the _enrich_photos thread pool: the reveal
                 # API rate-limits rapid concurrent calls (OLX -> 400).
@@ -1314,44 +1371,58 @@ class BaseParser:
                     if elapsed < interval:
                         time.sleep(interval - elapsed)
                     self._phone_last_call = time.monotonic()
-                    resp = session.get(url, timeout=self.timeout, headers={
+                    tmo = self.timeout if not pk else min(self.timeout, 5)
+                    resp = session.get(url, timeout=tmo, proxies=pk, headers={
                         "Referer": referer,
                         "X-Requested-With": "XMLHttpRequest",
                         "Accept": "*/*",
                     })
             except Exception as exc:
                 log.debug("[%s] phone endpoint failed: %s", self.name, exc)
-                phone_log.info("[%s] endpoint %s | error=%s",
-                               self.name, url[:160], type(exc).__name__)
-                return ""
+                phone_log.info("[%s] endpoint %s | error=%s (%s)",
+                               self.name, url[:160], type(exc).__name__,
+                               (pk.get("https") or "direct")[:40])
+                if pk:
+                    self._note_phone_proxy_spent(pk)
+                continue
+            self._note_proxy_used(pk)
             if resp.status_code == 200:
                 self._phone_consec_fail = 0
+                self._note_phone_proxy_spent(pk)
                 break
-            # 400/403/429/503 = soft-block (rate-limit / bot flag). Track
-            # consecutive failures; once the threshold is hit, pause calls
-            # (the block outlasts the short retry cooldown, so hammering it
-            # only extends the block).
+            # 400/403/429/503 = soft-block (rate-limit / bot flag). A 400 on
+            # a proxied exit just means that IP's bucket is empty — the next
+            # chain entry has its own budget, so keep going. A 403 also marks
+            # the exit burnt (WAF). The consecutive-failure breaker only
+            # matters for single-exit (direct) parsers like kn/krisha; OLX
+            # disables it (phone_block_threshold = 0) because OLX 400s are
+            # unpunished bucket drains, not escalating blocks.
             if resp.status_code in (400, 403, 429, 503):
-                self._phone_consec_fail += 1
-                if self._phone_consec_fail >= self.phone_block_threshold:
-                    self._phone_block_until = (
-                        time.monotonic() + self.phone_block_cooldown)
-                    phone_log.info(
-                        "[%s] endpoint %s | blocked after %d consecutive %s "
-                        "responses, pausing %.0fs",
-                        self.name, url[:160], self._phone_consec_fail,
-                        resp.status_code, self.phone_block_cooldown)
-            if (resp.status_code in (400, 429, 503)
-                    and attempt < attempts - 1):
+                if pk and resp.status_code == 403:
+                    self._note_phone_proxy_spent(pk)
+                if self.phone_block_threshold:
+                    self._phone_consec_fail += 1
+                    if (self._phone_consec_fail
+                            >= self.phone_block_threshold):
+                        self._phone_block_until = (
+                            time.monotonic() + self.phone_block_cooldown)
+                        phone_log.info(
+                            "[%s] endpoint %s | blocked after %d consecutive "
+                            "%s responses, pausing %.0fs",
+                            self.name, url[:160], self._phone_consec_fail,
+                            resp.status_code, self.phone_block_cooldown)
                 phone_log.info(
-                    "[%s] endpoint %s | http=%s (retry %d/%d)",
+                    "[%s] endpoint %s | http=%s via %s (try %d/%d)",
                     self.name, url[:160], resp.status_code,
-                    attempt + 1, self.phone_endpoint_retries)
+                    (pk.get("https") or "direct")[:40],
+                    attempt + 1, len(tries))
                 continue
             log.debug("[%s] phone endpoint %s -> HTTP %s",
                       self.name, url, resp.status_code)
             phone_log.info("[%s] endpoint %s | http=%s",
                            self.name, url[:160], resp.status_code)
+            return ""
+        if resp is None or resp.status_code != 200:
             return ""
         body = resp.text or ""
         m = re.search(r'"phones"\s*:\s*\[([^\]]*)\]', body)

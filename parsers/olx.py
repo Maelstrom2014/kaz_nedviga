@@ -38,12 +38,16 @@ class OlxParser(BaseParser):
     waf_max_retries = 2
     waf_cooldown = 20.0
     waf_max_cooldown = 60.0
-    # /api/v1/offers/{id}/phones soft-blocks (400) rapid successive calls.
-    # Serialize across the 6-thread detail pool + space calls ~1.2s apart so
-    # OLX sees a steady single stream, then retry transient 400/429/503.
-    phone_endpoint_retries = 2
+    # /api/v1/offers/{id}/phones rate-limits per client IP (~1 success per
+    # 2-3 min, then 400 until the bucket refills; failures are not punished).
+    # fetch_phone_endpoint therefore rotates exit IPs (pool proxies + direct
+    # last) and skips proxies whose bucket was just spent — see base.py.
     phone_endpoint_cooldown = 3.0
     phone_endpoint_min_interval = 1.2
+    # The consecutive-4xx breaker is meaningless here: a 400 says "this IP's
+    # bucket is empty", not "stop calling" — rotating to the next exit IP is
+    # the correct response, so disable the global pause.
+    phone_block_threshold = 0
     # Optional: reveal phones with a real headless browser (Playwright).
     # OLX masks the number and only reveals it after a click that passes
     # its device-ID bot challenge, which plain HTTP calls to the /phones
@@ -278,16 +282,16 @@ class OlxParser(BaseParser):
         (ad-id= links / JSON-LD sku). The number itself is served by the
         offers API for the page's own session.
 
-        Two variants are tried in order: the dedicated /phones endpoint
-        (small payload) and the offer-detail endpoint (fallback, in case
-        /phones is soft-blocked or omits the number)."""
+        Only the dedicated /phones endpoint is probed. The offer-detail
+        endpoint used to serve as a fallback but since 2026-08 it returns
+        200 with no number (``contact.phone`` is a boolean flag), so
+        calling it just burns a per-IP rate-limit slot per listing."""
         found = super()._discover_phone_endpoints(html)
         ad_id = self._extract_ad_id(html)
         if ad_id:
-            for p in ("/phones", ""):
-                url = "%s/api/v1/offers/%s%s" % (self.base_url, ad_id, p)
-                if url not in found:
-                    found.append(url)
+            url = "%s/api/v1/offers/%s/phones" % (self.base_url, ad_id)
+            if url not in found:
+                found.append(url)
         return found
 
     @staticmethod

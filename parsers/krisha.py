@@ -21,9 +21,7 @@ class KrishaParser(BaseParser):
     # exposes only the first frame). Also pulls map coords for the heatmap.
     enrich_photo_count = 1000
     # ajaxPhones needs the session that loaded the detail page (cookies +
-    # Referer); krisha.py passes it via fetch_session. A transient 403 from
-    # a slow request recovers on retry.
-    phone_endpoint_retries = 1
+    # Referer); krisha.py passes it via fetch_session.
     phone_endpoint_cooldown = 4.0
 
     def _build_url_base(self, params: SearchParams) -> str:
