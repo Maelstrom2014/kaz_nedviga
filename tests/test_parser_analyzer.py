@@ -154,7 +154,7 @@ class TestParserStatusApi:
         resp = client.get("/api/parser-status")
         assert resp.get_json()["parsers"] == []
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_returns_parser_stats(self, mock_get, client):
         from parsers.krisha import KrishaParser
         from .loaders import load_fixture
@@ -170,7 +170,7 @@ class TestParserStatusApi:
         assert data["parser_stats"][0]["name"] == "krisha.kz"
         assert data["parser_stats"][0]["status"] in ("ok", "empty")
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_stats_persist_after_search(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "persist.kz"

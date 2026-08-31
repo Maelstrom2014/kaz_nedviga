@@ -6,3 +6,6 @@ lxml>=4.9.0
 fpdf2>=2.7.0
 Pillow>=10.0.0
 pytest>=8.0.0
+# Optional: OLX phone reveal via headless browser (off by default;
+# olx_phone_playwright setting). Install browser: playwright install chromium
+# playwright>=1.49.0

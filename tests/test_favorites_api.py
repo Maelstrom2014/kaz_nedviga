@@ -275,7 +275,7 @@ class TestComputePriceChange:
 
 class TestApiCheckPrices:
 
-    @patch("app.db_check_prices")
+    @patch("webapp.core.db_check_prices")
     def test_check_prices_returns_results(self, mock_check, client):
         mock_check.return_value = [
             {"listing_key": "k1", "title": "apt1", "old_price": 100000, "new_price": 110000, "changed": True},
@@ -287,7 +287,7 @@ class TestApiCheckPrices:
         assert data["checked"] == 2
         assert data["changed_count"] == 1
 
-    @patch("app.db_check_prices")
+    @patch("webapp.core.db_check_prices")
     def test_check_prices_empty(self, mock_check, client):
         mock_check.return_value = []
         resp = client.post("/api/favorites/check-prices")

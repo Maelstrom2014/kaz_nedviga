@@ -1,5 +1,5 @@
 """Tests for Almaty districts data."""
-from data.districts import (
+from geo.districts import (
     DISTRICTS,
     DISTRICT_NAMES,
     DISTRICT_COORDS,

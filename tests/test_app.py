@@ -12,7 +12,7 @@ from app import app, _port_is_free, _port_owner_pids
 def client(tmp_path, monkeypatch):
     # Isolate the results cache so /api/search writes can never touch the
     # real data/last_results.json
-    monkeypatch.setattr("app._RESULTS_CACHE", tmp_path / "last_results.json")
+    monkeypatch.setattr("webapp.core._RESULTS_CACHE", tmp_path / "last_results.json")
     app.config["TESTING"] = True
     with app.test_client() as client:
         yield client
@@ -32,7 +32,16 @@ def test_api_districts(client):
     assert data[0]["name"] == "Алмалинский"
 
 
-def test_api_search_empty(client):
+def test_api_search_empty(client, monkeypatch):
+    # Stub the parser factory: an unpatched /api/search would run every real
+    # parser (live network) — this test only checks the response shape.
+    class _FakeParser:
+        name = "krisha.kz"
+
+        def run(self, params):
+            return []
+
+    monkeypatch.setattr("webapp.core.get_all_parsers", lambda: [_FakeParser()])
     resp = client.post("/api/search", json={})
     assert resp.status_code == 200
     data = resp.get_json()

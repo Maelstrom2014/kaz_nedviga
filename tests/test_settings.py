@@ -19,10 +19,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", test_db)
     monkeypatch.setattr(db, "_conn", None)
     db.init_db()
-    monkeypatch.setattr("app.SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr("webapp.core.SETTINGS_PATH", tmp_path / "settings.json")
     # Isolate the results cache so /api/database/reset and /api/search
     # can never touch the real data/last_results.json
-    monkeypatch.setattr("app._RESULTS_CACHE", tmp_path / "last_results.json")
+    monkeypatch.setattr("webapp.core._RESULTS_CACHE", tmp_path / "last_results.json")
     app.config["TESTING"] = True
     with app.test_client() as c:
         yield c
@@ -276,7 +276,7 @@ class TestHideNoPhoto:
     @pytest.fixture
     def results_cache(self, tmp_path, monkeypatch):
         p = tmp_path / "last_results.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", p)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", p)
         return p
 
     def test_default_off(self, client):
@@ -327,7 +327,7 @@ class TestHideNoPhoto:
         assert client.get("/api/results").get_json()["total"] == 2
 
     def test_api_search_hides_no_photo(self, client, results_cache, monkeypatch):
-        with patch("app.get_all_parsers",
+        with patch("webapp.core.get_all_parsers",
                    return_value=[_FakeNoPhotoParser()]):
             data = client.post("/api/search", json={}).get_json()
             assert data["total"] == 2

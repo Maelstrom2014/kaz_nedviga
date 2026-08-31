@@ -127,13 +127,13 @@ def _index_lookup(text: str, index: dict[str, str]) -> Optional[str]:
 def _district_for_point(lat: float, lon: float) -> Optional[str]:
     """Resolve an Almaty district by point-in-polygon.
 
-    Deferred import: ``data.districts`` holds the polygons and the
+    Deferred import: ``geo.districts`` holds the polygons and the
     point-in-polygon logic lives in ``app._point_in_polygon``. If the Flask
     app module is unavailable (e.g. running from a test), fall back to a
     local ray-casting implementation so enrichment still works.
     """
     try:
-        from data.districts import DISTRICTS
+        from geo.districts import DISTRICTS
     except Exception:
         return None
     for d in DISTRICTS:

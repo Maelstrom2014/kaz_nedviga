@@ -10,10 +10,10 @@ from parsers.models import Listing, SearchParams
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     """Isolated test client with temp results cache and settings."""
-    monkeypatch.setattr("app._RESULTS_CACHE", tmp_path / "last_results.json")
+    monkeypatch.setattr("webapp.core._RESULTS_CACHE", tmp_path / "last_results.json")
     # Isolate settings too — _filter_no_photo reads hide_no_photo from here,
     # the real file must never influence tests
-    monkeypatch.setattr("app.SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr("webapp.core.SETTINGS_PATH", tmp_path / "settings.json")
     app.config["TESTING"] = True
     with app.test_client() as client:
         yield client
@@ -263,7 +263,7 @@ class TestDictHelper:
 
 class TestApiSearch:
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_returns_results(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -279,7 +279,7 @@ class TestApiSearch:
         assert data["total"] == 2
         assert data["results"][0]["price_str"] == "100 000 тг"
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_sorts_by_price(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -300,7 +300,7 @@ class TestApiSearch:
         assert 300000 in prices
         assert prices.index(50000) < prices.index(300000)
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_none_price_sorted_last(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -318,7 +318,7 @@ class TestApiSearch:
         assert None in prices
         assert prices.index(150000) < prices.index(None)
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_filters_by_source(self, mock_get, client):
         mock_parser1 = MagicMock()
         mock_parser1.name = "krisha.kz"
@@ -336,7 +336,7 @@ class TestApiSearch:
         assert data["results"][0]["source"] == "krisha.kz"
         mock_parser2.run.assert_not_called()
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_parser_exception_handled(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "broken.kz"
@@ -348,7 +348,7 @@ class TestApiSearch:
         assert resp.status_code == 200
         assert data["total"] == 0
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_with_rooms_filter(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -360,7 +360,7 @@ class TestApiSearch:
         assert called_params.rooms == [1, 2]
         assert called_params.price_min == 50000
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_form_data(self, mock_get, client):
         """Test that form data (not JSON) also works."""
         mock_parser = MagicMock()
@@ -380,7 +380,7 @@ class TestApiSearch:
 
 class TestApiHeatmap:
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_returns_structure(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -399,7 +399,7 @@ class TestApiHeatmap:
         assert "total_listings" in data
         assert len(data["heat_points"]) == 8
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_avg_price_calculation(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -416,7 +416,7 @@ class TestApiHeatmap:
         assert almalinsky["avg_price"] == 150000  # (100k+200k)/2
         assert almalinsky["count"] == 2
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_intensity_range(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -434,7 +434,7 @@ class TestApiHeatmap:
         max_intensity_district = max(data["district_stats"], key=lambda x: x["avg_price"])
         assert max_intensity_district["intensity"] == 1.0
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_no_data(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -448,7 +448,7 @@ class TestApiHeatmap:
             assert stat["count"] == 0
             assert stat["intensity"] == 0
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     @pytest.mark.parametrize("ptype,expected_rooms", [
         ("studio", [0]),
         ("1", [1]),
@@ -464,7 +464,7 @@ class TestApiHeatmap:
         called_params = mock_parser.run.call_args[0][0]
         assert called_params.rooms == expected_rooms
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_property_type_apartment(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -475,7 +475,7 @@ class TestApiHeatmap:
         called_params = mock_parser.run.call_args[0][0]
         assert "апартамент" in called_params.query
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_property_type_all_no_filter(self, mock_get, client):
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -487,7 +487,7 @@ class TestApiHeatmap:
         assert called_params.rooms == []
         assert called_params.query == ""
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_no_almalinsky_dump(self, mock_get, client):
         """Unmatched listings must NOT default to Алмалинский."""
         mock_parser = MagicMock()
@@ -504,7 +504,7 @@ class TestApiHeatmap:
         assert almalinsky["count"] == 0
         assert data["unmatched_count"] == 1
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_point_in_polygon(self, mock_get, client):
         """Listings with coords matched by point-in-polygon, not text."""
         mock_parser = MagicMock()
@@ -522,7 +522,7 @@ class TestApiHeatmap:
         assert zhetysu["count"] == 1
         assert data["unmatched_count"] == 0
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_heatmap_word_boundary_not_street_name(self, mock_get, client):
         """'ул. Ауэзова' must NOT match 'Ауэзовский' district."""
         mock_parser = MagicMock()

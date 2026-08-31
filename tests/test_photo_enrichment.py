@@ -38,7 +38,11 @@ class TestKrishaDetailPhotos:
     def test_fetch_detail_photos_returns_multiple(self):
         parser = KrishaParser()
         listing = Listing(url="https://krisha.kz/a/show/123", source="krisha.kz")
-        with patch.object(parser, "fetch", return_value=load_fixture("krisha_detail")):
+        html = load_fixture("krisha_detail")
+        # krisha's _fetch_detail_photos goes through fetch_session (session
+        # is reused for the phone-endpoint call), not through fetch().
+        with patch.object(parser, "fetch_session",
+                          return_value=(MagicMock(), html)):
             photos = parser._fetch_detail_photos(listing)
         assert len(photos) >= 4
         # Thumbnails upgraded to full-size
@@ -320,6 +324,9 @@ class TestEnrichInRun:
                 return search_html
             return detail_html
         monkeypatch.setattr(parser, "fetch", mock_fetch)
+        # Detail enrichment goes through fetch_session (krisha override).
+        monkeypatch.setattr(parser, "fetch_session",
+                            lambda url: (MagicMock(), detail_html))
         results = parser.run(SearchParams(limit=0))
         assert len(results) > 0
         # The first listing should have multiple photos now

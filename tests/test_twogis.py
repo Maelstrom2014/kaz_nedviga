@@ -276,6 +276,7 @@ def test_run_uses_live_endpoint_constants():
         assert needle in url, f"url missing {needle!r}: {url}"
 
 
+@pytest.mark.live
 def test_run_live_returns_empty_gracefully_when_no_listings():
     # Almaty realty Canton returns 0 listings for rent categories (verified
     # 2026-08-16 — matches the source-doc §2/§44 warning). The parser must
@@ -338,7 +339,7 @@ def test_building_upsert_and_get(tmp_path, monkeypatch):
     assert got["residential_complex"] == "Алма Сити"
     assert got["floors_total"] == 12
     listing = Listing(title="x", building_id="b-1")
-    from data.buildings import _enrich_one, _ZHK_INDEX
+    from geo.buildings import _enrich_one, _ZHK_INDEX
     _enrich_one(listing, dbmod.get_building)
     assert listing.residential_complex == "Алма Сити"
     assert listing.total_floors == 12

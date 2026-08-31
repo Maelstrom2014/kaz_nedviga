@@ -16,9 +16,9 @@ data/settings.json
 # Photo disk cache
 cache/
 
-# Logs
+# Logs (rotating, under logs/)
+logs/
 *.log
-parsers_errors.log
 
 # Debug / recon scripts
 tools/
@@ -29,8 +29,8 @@ data/2gis_bundle_*
 data/2gis_realty_*
 data/phone_recon/
 
-# Task notes
-task_*.md
+# Design/task docs now live in docs/tasks/ and ARE tracked.
+# (old rule `task_*.md` removed 2026-08-31)
 
 # One-off cleanup script
 remove_kvartirka.py

@@ -184,14 +184,17 @@ def _execute_once() -> None:
     started_at = datetime.now().isoformat(sep=" ", timespec="seconds")
     try:
         # Import here to avoid circulars: app imports us (scheduler), so we
-        # must not import app at module load.
-        from app import _run_all_parsers  # type: ignore
-        from app import (_save_results, _to_dict, load_settings,
-                         _check_cached_cards, _write_results_cache)  # type: ignore
+        # must not import app/webapp at module load.
+        from webapp import core  # type: ignore
         from parsers.factory import get_all_parsers  # type: ignore
         from parsers.models import SearchParams  # type: ignore
+        _run_all_parsers = core._run_all_parsers
+        _save_results = core._save_results
+        _to_dict = core._to_dict
+        _check_cached_cards = core._check_cached_cards
+        _write_results_cache = core._write_results_cache
 
-        settings = load_settings()
+        settings = core.load_settings()
         # Use the user's saved search defaults so the scheduler's runs match
         # what they'd see in the UI. Defaults are: price_min/max, rooms,
         # district, floor_min/max, area_min/max, limit.
@@ -211,8 +214,7 @@ def _execute_once() -> None:
         parsers = get_all_parsers()
         # Apply per-parser max_pages overrides the same way /api/search does.
         try:
-            from app import _apply_parser_max_pages
-            _apply_parser_max_pages(parsers)
+            core._apply_parser_max_pages(parsers)
         except Exception:
             pass  # non-critical
 

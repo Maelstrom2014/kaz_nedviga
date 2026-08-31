@@ -7,7 +7,8 @@ from unittest.mock import patch, MagicMock
 import db
 from app import (app, _load_prev_results, _save_results,
                  _is_apartment_listing)
-from parsers.base import BaseParser, log, _LOG_PATH
+from logsetup import LOGS_DIR
+from parsers.base import BaseParser, log
 from parsers.krisha import KrishaParser
 from parsers.models import Listing, SearchParams
 
@@ -23,7 +24,7 @@ def client(tmp_path, monkeypatch):
     db.init_db()
     # Isolate settings too — _filter_no_photo reads hide_no_photo from here,
     # the real file must never influence tests
-    monkeypatch.setattr("app.SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr("webapp.core.SETTINGS_PATH", tmp_path / "settings.json")
     app.config["TESTING"] = True
     with app.test_client() as c:
         yield c
@@ -37,7 +38,7 @@ def client(tmp_path, monkeypatch):
 class TestErrorLogger:
 
     def test_log_file_exists(self):
-        assert _LOG_PATH.name == "parsers_errors.log"
+        assert (LOGS_DIR / "parsers_errors.log").exists()
 
     def test_log_file_writes_errors(self, tmp_path, monkeypatch):
         test_log = tmp_path / "test_errors.log"
@@ -162,12 +163,12 @@ class TestResultsCache:
 
     def test_load_empty_cache(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
         assert _load_prev_results() == {}
 
     def test_save_and_load(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
         results = [
             {"source": "krisha.kz", "url": "http://test/1", "price": 150000, "title": "apt1"},
             {"source": "kn.kz", "url": "http://test/2", "price": 200000, "title": "apt2"},
@@ -180,7 +181,7 @@ class TestResultsCache:
 
     def test_save_merges_with_old(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
         # Save first batch
         _save_results([
             {"source": "krisha.kz", "url": "http://test/1", "price": 150000, "title": "apt1"},
@@ -221,7 +222,7 @@ class TestResultsCache:
         }
         cache.write_text(json.dumps({**junk, **good}, ensure_ascii=False),
                          encoding="utf-8")
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
         loaded = _load_prev_results()
         assert "olx.kz|http://olx/cat" not in loaded
         assert "krisha.kz|http://test/1" in loaded
@@ -234,7 +235,7 @@ class TestResultsCache:
             "area": None, "url": "http://olx/cat", "source": "olx.kz",
         }}
         cache.write_text(json.dumps(junk, ensure_ascii=False), encoding="utf-8")
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
         new_results = [
             {"source": "krisha.kz", "url": "http://test/9", "price": 120000,
              "rooms": 1, "area": 30.0, "title": "apt9"},
@@ -245,7 +246,7 @@ class TestResultsCache:
 
     def test_save_detects_price_change(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
         # Save with price 150000
         _save_results([
             {"source": "krisha.kz", "url": "http://test/1", "price": 150000, "title": "apt1"},
@@ -267,10 +268,10 @@ class TestResultsCache:
 
 class TestApiSearchMerge:
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_marks_new_listings(self, mock_get, client, tmp_path, monkeypatch):
         cache = tmp_path / "cache.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
 
         mock_parser = MagicMock()
         mock_parser.name = "test.kz"
@@ -284,10 +285,10 @@ class TestApiSearchMerge:
         assert resp.status_code == 200
         assert data["results"][0]["is_new"] is True
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_marks_old_listings_not_new(self, mock_get, client, tmp_path, monkeypatch):
         cache = tmp_path / "cache.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
 
         # First search to populate cache
         mock_parser = MagicMock()
@@ -303,10 +304,10 @@ class TestApiSearchMerge:
         data = resp.get_json()
         assert data["results"][0]["is_new"] is False
 
-    @patch("app.get_all_parsers")
+    @patch("webapp.core.get_all_parsers")
     def test_search_detects_price_change(self, mock_get, client, tmp_path, monkeypatch):
         cache = tmp_path / "cache.json"
-        monkeypatch.setattr("app._RESULTS_CACHE", cache)
+        monkeypatch.setattr("webapp.core._RESULTS_CACHE", cache)
 
         # First search with price 100000
         mock_parser = MagicMock()
