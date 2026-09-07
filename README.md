@@ -30,9 +30,11 @@ A web app for searching apartment rentals across 6 Almaty real-estate sites, wit
 
 ### Search and map
 
-- **Filters** (applied instantly to the cache, no new parsing): room count (0–4+), price, district, floor, area, text query.
+- **Filters** (applied instantly to the cache, no new parsing): room count (0–4+), price, district, floor, area, text query, hide «без мебели» (unfurnished).
 - **Result cache**: merging previous and new results (listings don't disappear between searches).
 - **Price-change tracking**: `NEW` badges for new listings, price-change badges.
+- **Metro distance** (`geo/metro.py`): cards show the nearest Almaty metro station and the walking-distance approximation (haversine by coordinates).
+- **Sorting**: by price (default), by date (both directions), and by the ML price evaluation (best deals first / last).
 - **Interactive map** (Leaflet + OpenStreetMap):
   - Boundaries of Almaty's 8 districts as polygons (toggleable "Districts" layer)
   - Markers with prices in 3 currencies (KZT / RUB / USD, compact format: `250k / 48k / $532`)
@@ -87,7 +89,7 @@ A web app for searching apartment rentals across 6 Almaty real-estate sites, wit
 - **6 color themes**: Midnight, Carbon, Forest (dark) + Daylight, Sand, Rose (light).
 - **Default search parameters** (stored on the server).
 - **Pages per site**: per-parser max_pages setting (1–30).
-- **Parser analyzer**: status, time, result count, errors for each parser.
+- **Parser analyzer**: status, time, result count, errors for each parser + how many listings were hidden by filters.
 - **Results export** to TXT and PDF (portrait + landscape) with all photos.
 - **Photo carousel** on the listing cards.
 - **Data management**: clear favorites, reset the database, clear the results cache, clear the image cache.
@@ -347,9 +349,11 @@ Each district has:
 
 ### Поиск и карта
 
-- **Фильтры** (применяются мгновенно к кэшу, без нового парсинга): количество комнат (0–4+), цена, район, этаж, площадь, текстовый запрос
+- **Фильтры** (применяются мгновенно к кэшу, без нового парсинга): количество комнат (0–4+), цена, район, этаж, площадь, текстовый запрос, убрать «без мебели»
 - **Кэш результатов**: объединение предыдущих и новых результатов (квартиры не исчезают между поисками)
 - **Отслеживание изменений цен**: бейджи `NEW` для новых объявлений, бейджи изменения цены
+- **Расстояние до метро** (`geo/metro.py`): на карточках — ближайшая станция метро Алматы и расстояние до неё (гаверсинус по координатам)
+- **Сортировка**: по цене (по умолчанию), по дате (в обе стороны) и по ML-оценке цены (сначала выгодные / сначала дорогие)
 - **Интерактивная карта** (Leaflet + OpenStreetMap):
   - Границы 8 районов Алматы с полигонами (переключатель «Районы»)
   - Маркеры с ценами в 3 валютах (KZT · RUB · USD, компактный формат: `250к ₸ · 48к ₽ · $532`)
@@ -399,12 +403,12 @@ Each district has:
 - **4 вкладки**:
   - **Поиск и карта** — поисковый движок: фильтры слева сужают кэшированные результаты в реальном времени (карточки + маркеры + цвета районов), без повторного парсинга
   - **Избранное и мониторинг** — сохранённые, оценки, комментарии, графики цен
-  - **Анализатор** — запуск парсинга (кнопка «Поиск», выбор источников, страниц на сайт) + детальная статистика по каждому парсеру
+  - **Анализатор** — запуск парсинга (кнопка «Поиск», выбор источников, страниц на сайт) + детальная статистика по каждому парсеру + сколько объявлений скрыто фильтрами
   - **Настройки** — параметры по умолчанию, курс валют, кэш картинок, тема, управление данными
 - **6 цветовых тем**: Полночь, Карбон, Лес (тёмные) + Дневной, Песок, Роза (светлые)
 - **Параметры поиска по умолчанию** (сохраняются на сервере)
 - **Страницы по сайтам**: per-parser настройка max_pages (1–30)
-- **Анализатор парсеров**: статус, время, количество результатов, ошибки по каждому парсеру
+- **Анализатор парсеров**: статус, время, количество результатов, ошибки по каждому парсеру, число объявлений, скрытых фильтрами
 - **Выгрузка результатов** в TXT и PDF (портретный + ландшафтный) с всеми фото
 - **Карусель фотографий** на карточках объявлений
 - **Управление данными**: очистка избранного, сброс базы данных, очистка кэша результатов, очистка кэша картинок

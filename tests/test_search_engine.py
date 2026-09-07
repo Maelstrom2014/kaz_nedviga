@@ -1,4 +1,6 @@
 """Tests for the search engine: _parse_params, _to_dict, _build_listings, sorting, API endpoints."""
+import json
+
 import pytest
 from unittest.mock import patch, MagicMock
 from werkzeug.datastructures import MultiDict
@@ -420,3 +422,34 @@ class TestIndexPage:
         assert b'id="map"' in resp.data
         assert b"districtsToggle" in resp.data
         assert b"favoritesOnlyToggle" in resp.data
+
+
+class TestDistrictAnnotation:
+
+    def _payload(self, **overrides):
+        row = {"title": "1-к", "price": 150000, "source": "krisha",
+               "url": "https://x/1", "rooms": 1, "area": 30.0,
+               "currency": "тг", "photo": "http://x/1.jpg",
+               "address": "ул. Кунаева, 25"}
+        row.update(overrides)
+        return {"k1": row}
+
+    def test_results_annotated_by_coordinates(self, client, tmp_path, monkeypatch):
+        """Координаты внутри Алмалинского → district_name, без текста в адресе."""
+        tmp_path.joinpath("last_results.json").write_text(json.dumps(
+            self._payload(lat=43.2640, lon=76.9290)), encoding="utf-8")
+        results = client.get("/api/results").get_json()["results"]
+        assert results[0]["district_name"] == "Алмалинский"
+
+    def test_results_outside_city_no_district(self, client, tmp_path):
+        """Координаты вне полигонов → district_name отсутствует."""
+        tmp_path.joinpath("last_results.json").write_text(json.dumps(
+            self._payload(lat=43.1000, lon=77.2000)), encoding="utf-8")
+        results = client.get("/api/results").get_json()["results"]
+        assert "district_name" not in results[0]
+
+    def test_results_without_coords_no_district(self, client, tmp_path):
+        tmp_path.joinpath("last_results.json").write_text(json.dumps(
+            self._payload()), encoding="utf-8")
+        results = client.get("/api/results").get_json()["results"]
+        assert "district_name" not in results[0]

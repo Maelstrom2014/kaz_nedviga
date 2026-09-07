@@ -3,6 +3,8 @@
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap', maxZoom: 18
     }).addTo(map);
+    // Линейка масштаба: метры на мелких масштабах, км на крупных
+    L.control.scale({ metric: true, imperial: false, maxWidth: 150, position: 'bottomleft' }).addTo(map);
 
     let districtLayers = [];  // polygons + markers
     let listingMarkers = null;  // MarkerClusterGroup for listings
@@ -13,6 +15,15 @@
     let districtsData = [];
     let currentResults = [];
     let displayedResults = [];  // filtered subset shown in the grid + map
+    let filterStats = { total: 0, hidden: 0 };  // how many listings were filtered out
+
+    const UNFURNISHED_RE = /без\s+мебели|жиһазсыз|без\s+кухон/i;
+
+    function fmtDistance(m) {
+      if (m == null || !Number.isFinite(m)) return '';
+      if (m < 1000) return Math.round(m / 10) * 10 + ' м';
+      return (m / 1000).toFixed(1).replace('.', ',') + ' км';
+    }
 
     // === Load districts ===
     async function loadDistricts() {
@@ -53,11 +64,13 @@
 
     function countListingsInDistrict(districtName) {
       if (!displayedResults || !districtName) return 0;
-      // Match the FULL district name with word boundaries so "ул. Ауэзова"
-      // does NOT match "Ауэзовский" (shared root, different word).
+      // Приоритет: район по координатам (district_name); для строк без
+      // координат — текстовый fallback по адресу/заголовку. Word boundaries
+      // нужны, чтобы "ул. Ауэзова" не совпала с "Ауэзовский".
       const escaped = districtName.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp('\\b' + escaped + '\\b');
       return displayedResults.filter(r => {
+        if (r.district_name) return r.district_name === districtName;
         const hay = ((r.address || '') + ' ' + (r.title || '')).toLowerCase();
         return re.test(hay);
       }).length;
@@ -300,6 +313,7 @@
         floor_max: num('floor_max'),
         area_min: num('area_min'),
         area_max: num('area_max'),
+        hide_unfurnished: fd.get('hide_unfurnished') !== null,
       };
     }
 
@@ -319,16 +333,39 @@
         if (c.area_max != null && (r.area == null || r.area > c.area_max)) return false;
         if (c.floor_min != null && (r.floor == null || r.floor < c.floor_min)) return false;
         if (c.floor_max != null && (r.floor == null || r.floor > c.floor_max)) return false;
-        if (districtRe) {
-          const hay = ((r.address || '') + ' ' + (r.title || '')).toLowerCase();
-          if (!districtRe.test(hay)) return false;
+        if (districtRe || c.district) {
+          // Приоритет — район по координатам (district_name от сервера);
+          // текстовый поиск в адресе работает только как fallback.
+          if (r.district_name) {
+            if (r.district_name !== c.district) return false;
+          } else if (districtRe) {
+            const hay = ((r.address || '') + ' ' + (r.title || '')).toLowerCase();
+            if (!districtRe.test(hay)) return false;
+          }
+        }
+        if (c.hide_unfurnished) {
+          const hay = ((r.title || '') + ' ' + (r.description || '')).toLowerCase();
+          if (UNFURNISHED_RE.test(hay)) return false;
         }
         return true;
       });
-      // Sort by date (forward/reverse) when a date-sort option is selected.
+      filterStats = {
+        total: currentResults.length,
+        hidden: currentResults.length - displayedResults.length,
+      };
+      // Sort by date (forward/reverse) or by ML price evaluation.
       // ISO YYYY-MM-DD dates sort correctly as plain strings; undated last.
       const dateSort = (document.getElementById('dateSort') || {}).value || '';
-      if (dateSort) {
+      if (dateSort === 'ml_desc' || dateSort === 'ml_asc') {
+        // Вероятность «хорошей цены» от модели; без оценки — в конец.
+        const dir = dateSort === 'ml_desc' ? -1 : 1;
+        displayedResults = displayedResults.slice().sort((a, b) => {
+          const pa = a.price_eval ? a.price_eval.prob : -1;
+          const pb = b.price_eval ? b.price_eval.prob : -1;
+          if (pa === pb) return 0;
+          return pa < pb ? -dir : dir;
+        });
+      } else if (dateSort) {
         displayedResults = displayedResults.slice().sort((a, b) => {
           const da = a.date_updated || a.date_published || '';
           const db = b.date_updated || b.date_published || '';
@@ -393,7 +430,7 @@
     document.getElementById('resetFiltersBtn').addEventListener('click', function() {
       const form = document.getElementById('searchForm');
       form.querySelectorAll('input[type="text"], input[type="number"]').forEach(el => { el.value = ''; });
-      form.querySelectorAll('input[name="rooms"]').forEach(cb => { cb.checked = false; });
+      form.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
       const dist = form.querySelector('select[name="district"]');
       if (dist) dist.selectedIndex = 0;
       applyClientFilters();
@@ -479,6 +516,7 @@ function renderResults(results, total) {
                 ${roomsStr ? `<span class="card-chip"><b>${escapeHtml(roomsStr)}</b></span>` : ''}
                 ${areaStr ? `<span class="card-chip">${escapeHtml(areaStr)}</span>` : ''}
                 ${floorStr ? `<span class="card-chip">${escapeHtml(floorStr)}</span>` : ''}
+                ${(r.metro && r.metro.name) ? `<span class="card-chip" title="Расстояние до ближайшей станции метро">🚇 ${escapeHtml(r.metro.name)} · ${fmtDistance(r.metro.distance_m)}</span>` : ''}
               </div>
               ${r.address ? `<div style="font-size:.8rem;color:var(--text-dim);margin-top:6px;">${escapeHtml(r.address)}</div>` : ''}
               ${r.phone ? `<div class="listing-phone">Тел: <a href="tel:${r.phone.replace(/[^\d+]/g, '')}">${escapeHtml(r.phone)}</a>${phoneRepeatHtml(r, phoneCounts)}</div>` : ''}
@@ -659,12 +697,17 @@ function renderResults(results, total) {
       }
     }
 
+    function filterCardHtml() {
+      if (!(filterStats.hidden > 0)) return '';
+      return `<div class="analyzer-summary-card" title="Скрыто фильтрами вкладки «Поиск и карта» (показано ${filterStats.total - filterStats.hidden} из ${filterStats.total})"><div class="num" style="color:var(--warning);">${filterStats.hidden}</div><div class="label">скрыто фильтрами</div></div>`;
+    }
+
     function renderParserStats(stats) {
       const grid = document.getElementById('analyzerGrid');
       const summary = document.getElementById('analyzerSummary');
       if (!stats || !stats.length) {
         grid.innerHTML = '<div class="empty-state">Запустите поиск — здесь появится детальная статистика по каждому парсеру.</div>';
-        summary.innerHTML = '';
+        summary.innerHTML = filterCardHtml();
         return;
       }
       const ok = stats.filter(s => s.status === 'ok').length;
@@ -677,6 +720,7 @@ function renderResults(results, total) {
         <div class="analyzer-summary-card"><div class="num" style="color:var(--text-dim);">${empty}</div><div class="label">пусто</div></div>
         <div class="analyzer-summary-card"><div class="num" style="color:var(--danger);">${errors}</div><div class="label">ошибок</div></div>
         <div class="analyzer-summary-card"><div class="num" style="color:var(--accent);">${totalResults}</div><div class="label">объявлений</div></div>
+        ${filterCardHtml()}
         <div class="analyzer-summary-card"><div class="num">${(totalMs/1000).toFixed(1)}с</div><div class="label">общее время</div></div>
       `;
       grid.innerHTML = stats.map(s => {

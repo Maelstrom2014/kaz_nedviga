@@ -9,6 +9,40 @@ from .. import core
 bp = Blueprint("search", __name__)
 
 
+def _annotate_district(rows: list[dict]) -> None:
+    """Определить район по координатам (point-in-polygon) → ``district_name``
+    и расстояние до ближайшего метро → ``metro``.
+
+    Текстовый поиск имени района в адресе ненадёжен: реальные адреса
+    («ул. Кунаева, 25») почти никогда не содержат название района.
+    Аннотация проставляется только на ответе — кэш не изменяется.
+    """
+    try:
+        from geo.districts import DISTRICTS
+
+        for r in rows:
+            if not isinstance(r, dict) or r.get("district_name"):
+                continue
+            lat, lon = r.get("lat"), r.get("lon")
+            if lat is None or lon is None:
+                continue
+            for d in DISTRICTS:
+                if core._point_in_polygon(lat, lon, d["polygon"]):
+                    r["district_name"] = d["name"]
+                    break
+            try:
+                from geo.metro import nearest_metro
+
+                station, dist_m = nearest_metro(lat, lon)
+                if station:
+                    r["metro"] = {"name": station["name"],
+                                  "distance_m": int(round(dist_m))}
+            except Exception:
+                pass
+    except Exception as exc:
+        core.log.debug("[search] district annotation skipped: %s", exc)
+
+
 def _annotate_price_eval(rows: list[dict]) -> None:
     """Добавить оценку «хорошая цена» от ML-модели (если обучена)."""
     try:
@@ -80,6 +114,7 @@ def api_search():
         core._write_results_cache(merged)
     merged_list.sort(key=lambda r: (r.get("price") is None, r.get("price") or 0))
     merged_list = core._filter_no_photo(merged_list)
+    _annotate_district(merged_list)
     _annotate_price_eval(merged_list)
 
     _pool = core.get_proxy_pool()
@@ -108,6 +143,7 @@ def api_get_results():
     # reload must not re-display stale "NEW"/"CHANGED" markers.
     core._strip_volatile_flags(results)
     results = core._filter_no_photo(results)
+    _annotate_district(results)
     _annotate_price_eval(results)
     return jsonify({
         "total": len(results),

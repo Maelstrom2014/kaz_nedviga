@@ -57,8 +57,9 @@ def _train_job() -> None:
 
         from ml import train_price_model as t
 
-        args = argparse.Namespace(csv=str(DEFAULT_OUT), epochs=600,
-                                  patience=60, seed=42)
+        args = argparse.Namespace(csv=str(DEFAULT_OUT), model="histgb",
+                                  labels="quantile", quantile=0.35,
+                                  epochs=600, patience=60, seed=42)
         rc = t.train(args)
         if rc != 0:
             _set_error(f"Обучение завершилось с кодом {rc}")

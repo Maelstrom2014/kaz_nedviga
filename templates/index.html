@@ -84,6 +84,12 @@
               <input type="number" name="area_max">
             </div>
           </div>
+          <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem;">
+              <input type="checkbox" name="hide_unfurnished" style="width:16px;height:16px;cursor:pointer;">
+              Убрать «без мебели»
+            </label>
+          </div>
         </form>
       </aside>
 
@@ -115,10 +121,12 @@
         <div>
           <div class="results-header">
             <h2 id="resultsTitle">Результаты: 0 объявлений</h2>
-            <select id="dateSort" class="sort-select" title="Сортировка по дате" onchange="applyClientFilters()">
+            <select id="dateSort" class="sort-select" title="Сортировка результатов" onchange="applyClientFilters()">
               <option value="">Сортировка: по цене</option>
               <option value="asc">Дата: старые → новые</option>
               <option value="desc">Дата: новые → старые</option>
+              <option value="ml_desc">Оценка ИИ: выгодные → дорогие</option>
+              <option value="ml_asc">Оценка ИИ: дорогие → выгодные</option>
             </select>
             <div class="export-buttons" id="exportButtons" style="display:none;">
               <button class="btn-export" id="clearResultsBtn" onclick="clearResults()" style="border-color:var(--danger);color:var(--danger);">Очистить кэш</button>
@@ -311,7 +319,7 @@
             <div style="padding: 16px 20px;">
               <div class="crawl-controls" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:18px;">
                 <h3 style="font-size:.95rem;margin:0 0 10px;">Запуск парсинга</h3>
-                <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 12px;">Сборщик обходит выбранные сайты и наполняет кэш объявлений. Фильтры (комнаты, цена, район и т.д.) применяются к собранным данным в реальном времени на вкладке «Поиск и карта».</p>
+                <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 12px;">Сборщик обходит выбранные сайты и наполняет кэш объявлений. Фильтры (комнаты, цена, район и т.д.) применяются к собранным данным в реальном времени на вкладке «Поиск и карта», а сколько объявлений они скрыли — в сводке ниже.</p>
                 <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
                   <div class="form-group" style="margin:0;">
                     <label>Страниц на каждый сайт (1–10)</label>
