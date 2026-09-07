@@ -2,7 +2,7 @@
 
 # DomAlmaty — Rental housing search for Almaty
 
-A web app for searching apartment rentals across 6 Almaty real-estate sites, with an interactive map, a price heat map, favorites, price monitoring, and PDF/TXT export.
+A web app for searching apartment rentals across 6 Almaty real-estate sites, with an interactive map, ML price evaluation, favorites, price monitoring, and PDF/TXT export.
 
 ## Features
 
@@ -34,16 +34,11 @@ A web app for searching apartment rentals across 6 Almaty real-estate sites, wit
 - **Result cache**: merging previous and new results (listings don't disappear between searches).
 - **Price-change tracking**: `NEW` badges for new listings, price-change badges.
 - **Interactive map** (Leaflet + OpenStreetMap):
-  - Boundaries of Almaty's 8 districts as polygons
+  - Boundaries of Almaty's 8 districts as polygons (toggleable "Districts" layer)
   - Markers with prices in 3 currencies (KZT / RUB / USD, compact format: `250k / 48k / $532`)
   - Popups with photo, price, address and link
   - **"Favorites only"** button — shows only saved listings on the map
   - Clicking a card focuses the map (flyTo + openPopup); clicking a price marker highlights and scrolls to its card
-- **Price heat map** by district, with a property-type filter:
-  - Heat points — showing price zones
-  - Districts (polygons) — colored, with the listing count and average price
-  - Exact per-district count: point-in-polygon (by coordinates) + a word-boundary text fallback
-  - Unmatched listings — a separate category (not dumped into Almalinskiy)
 
 ### On-disk image cache
 
@@ -71,6 +66,15 @@ A web app for searching apartment rentals across 6 Almaty real-estate sites, wit
 - **Exchange rates** KZT → RUB / USD / EUR (auto-refresh every 10 minutes, disk cache).
 - **Prices on cards and markers** in all three currencies.
 - **Price per m²** on the cards.
+
+### Features, tags and price evaluation (ML)
+
+- **Feature extraction** (`features.py`): ~60 tags parsed from title/description (RU/KZ patterns) — renovation grade, furniture level, appliances, bathroom type, building type, year built, ceiling height, parking/security/playground, view, near metro/school/park, "urgent", "no commission", "owner" and more; plus derived fields (price per m² / per room, floor ratio, first/last floor, district by coordinates, photo count, description stats).
+- **Combined CSV** (`features_csv.py`): one flat `data/features.csv` from the results cache (`data/last_results.json`) and/or favorites (SQLite). Flags: `--favorites`, `--only-favorites`, `--with-price-only`, `--min-price`, `--out`.
+- **Price-quality neural net** (`ml/train_price_model.py`): PyTorch MLP trained to predict whether a listing is a **good price** (auto-label: price ≤ median of similar listings by rooms/district/area bucket). Saves `ml/price_model.pt` + `ml/price_meta.json`, prints accuracy/precision/recall/F1/AUC.
+- **Inference** (`ml/predict_price.py`): scores a CSV (or a single JSON listing) and prints the top deals with verdicts «хорошая цена / спорно / дорого».
+- **Built into the UI**: search cards get a colored badge (green «хорошая цена» / yellow «спорно» / red «дорого» with the probability); **Settings → "Оценка цены (нейросеть)"** has an **«Обучить модель»** button that rebuilds `data/features.csv` from the results cache + favorites, retrains in a background thread and reports F1/AUC (API: `POST /api/ml/train`, `GET /api/ml/status`).
+- Requires `torch` (optional): `pip install torch`.
 
 ### Interface
 
@@ -144,7 +148,7 @@ python -m pytest tests/test_photo_enrichment.py -v --tb=short
 
 ```
 kaz_nedviga/
-├── app.py                        Flask application, API endpoints, heatmap
+├── app.py                        Flask application composition root, startup side effects
 ├── export_utils.py               Export TXT/PDF, on-disk photo cache
 ├── rates.py                      Exchange rates (KZT -> RUB/USD/EUR)
 ├── db.py                         SQLite layer (favorites, price history)
@@ -182,7 +186,7 @@ kaz_nedviga/
 │   ├── test_parser_engine.py      Engine: paging, partial, sticky sessions
 │   ├── test_parser_analyzer.py    Parser statistics
 │   ├── test_photo_enrichment.py   Photo enrichment, OLX/etagi coordinates
-│   ├── test_search_engine.py      Heatmap, district matching, point-in-polygon
+│   ├── test_search_engine.py      Search params, district matching, point-in-polygon
 │   ├── test_settings.py           Settings, photo_cache_mb
 │   ├── test_export.py             Export TXT/PDF
 │   ├── test_favorites_api.py      Favorites API
@@ -203,7 +207,8 @@ kaz_nedviga/
 | `/` | GET | Main page (SPA) |
 | `/api/search` | POST | Search across sites (merged results + parser stats) |
 | `/api/districts` | GET | Almaty's 8 districts with coordinates and polygons |
-| `/api/heatmap` | POST | Price heat map by district (point-in-polygon matching) |
+| `/api/ml/train` | POST | Retrain the price-evaluation neural net (background) |
+| `/api/ml/status` | GET | Training status + model metrics |
 
 ### Export
 
@@ -262,7 +267,7 @@ Each district has:
 | Component | Technology |
 |---|---|
 | Backend | Flask, BeautifulSoup4, lxml, SQLite |
-| Frontend | Leaflet.js, leaflet.heat, Chart.js, vanilla JS |
+| Frontend | Leaflet.js, Chart.js, vanilla JS |
 | Parsing | requests, curl_cffi (TLS impersonation), ThreadPoolExecutor |
 | Anti-bot | randomized headers, sticky sessions, WAF fallback |
 | Photo cache | on-disk SHA1, WebP storage, LRU eviction, Pillow (WebP→JPEG) |
@@ -278,7 +283,7 @@ Each district has:
                 \             |             |            /
                  \            |             |           /
                       Flask API (app.py)
-     /api/search  /api/heatmap  /api/favorites  /api/settings
+/api/search  /api/ml  /api/favorites  /api/settings
                   \            |             /
     [ parsers/ ]   [ export ]  [ db.py ]     [ rates.py ]
     6 parsers       PDF/TXT     SQLite        KZT -> RUB/
@@ -322,16 +327,11 @@ Each district has:
 - **Кэш результатов**: объединение предыдущих и новых результатов (квартиры не исчезают между поисками)
 - **Отслеживание изменений цен**: бейджи `NEW` для новых объявлений, бейджи изменения цены
 - **Интерактивная карта** (Leaflet + OpenStreetMap):
-  - Границы 8 районов Алматы с полигонами
+  - Границы 8 районов Алматы с полигонами (переключатель «Районы»)
   - Маркеры с ценами в 3 валютах (KZT · RUB · USD, компактный формат: `250к ₸ · 48к ₽ · $532`)
   - Попапы с фото, ценой, адресом и ссылкой
   - Кнопка **«Только избранное»** — показывает на карте только сохранённые объявления
   - Клик по карточке → фокус на карте (flyTo + openPopup)
-- **Тепловая карта цен** по районам с фильтром по типу недвижимости:
-  - Тепловая карта (heat points) — показ ценовых зон
-  - Районы (полигоны) — окраsmouth района с количеством объявлений и средней ценой
-  - Точный подсчет по району: point-in-polygon (по координатам) + word-boundary текстовый fallback
-  - Несопоставленные объявления → отдельная категория (не скидываются в Алмалинский)
 
 ### Кэш картинок на диске
 
@@ -432,7 +432,7 @@ python -m pytest tests/test_photo_enrichment.py -v --tb=short
 
 ```
 kaz_nedviga/
-├── app.py                        # Flask-приложение, API endpoints, heatmap
+├── app.py                        # Flask-приложение (composition root), startup
 ├── export_utils.py               # Экспорт TXT/PDF, кэш фото на диске
 ├── rates.py                      # Курсы валют (KZT → RUB/USD/EUR)
 ├── db.py                         # SQLite слой (избранное, история цен)
@@ -470,7 +470,7 @@ kaz_nedviga/
 │   ├── test_parser_engine.py      # Engine: paging, partial, sticky sessions
 │   ├── test_parser_analyzer.py    # Статистика парсеров
 │   ├── test_photo_enrichment.py   # Обогащение фото, координаты OLX/etagi
-│   ├── test_search_engine.py      # Heatmap, district matching, point-in-polygon
+│   ├── test_search_engine.py      # Парметры поиска, районы, point-in-polygon
 │   ├── test_settings.py           # Настройки, photo_cache_mb
 │   ├── test_export.py             # Экспорт TXT/PDF
 │   ├── test_favorites_api.py      # API избранного
@@ -491,7 +491,8 @@ kaz_nedviga/
 | `/` | GET | Главная страница (SPA) |
 | `/api/search` | POST | Поиск по сайтам (merged-результаты + статистика парсеров) |
 | `/api/districts` | GET | 8 районов Алматы с координатами и полигонами |
-| `/api/heatmap` | POST | Тепловая карта цен по районам (point-in-polygon matching) |
+| `/api/ml/train` | POST | Переобучить модель оценки цены (фоновый поток) |
+| `/api/ml/status` | GET | Статус обучения + метрики модели |
 
 ### Экспорт
 
@@ -550,7 +551,7 @@ kaz_nedviga/
 | Компонент | Технология |
 |---|---|
 | Backend | Flask, BeautifulSoup4, lxml, SQLite |
-| Frontend | Leaflet.js, leaflet.heat, Chart.js, ванильный JS |
+| Frontend | Leaflet.js, Chart.js, ванильный JS |
 | Парсинг | requests, curl_cffi (TLS impersonation), ThreadPoolExecutor |
 | Антибот | рандомизированные заголовки, sticky sessions, WAF fallback |
 | Кэш фото | on-disk SHA1, хранение в WebP, LRU eviction, Pillow (WebP→JPEG) |
@@ -572,7 +573,7 @@ kaz_nedviga/
         │             │              │              │
 ┌───────┴─────────────┴──────────────┴──────────────┴──────┐
 │                    Flask API (app.py)                      │
-│  /api/search  /api/heatmap  /api/favorites  /api/settings │
+│  /api/search  /api/ml  /api/favorites  /api/settings │
 └───────┬─────────────┬──────────────┬──────────────┬──────┘
         │             │              │              │
 ┌───────┴─────┐ ┌─────┴──────┐ ┌─────┴────┐ ┌──────┴──────┐

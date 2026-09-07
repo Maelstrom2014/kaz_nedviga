@@ -99,29 +99,16 @@
 
         <!-- Tab: Search -->
         <div class="tab-content active map-right" id="searchTab">
-        <!-- Map with heatmap -->
+        <!-- Map -->
         <div class="map-section">
           <div class="map-header">
-            <h2>Карта Алматы — районы и тепловая карта цен</h2>
+            <h2>Карта Алматы — районы</h2>
             <div class="heatmap-controls">
-              <select id="propertyType" title="Тип недвижимости для тепловой карты">
-                <option value="all">Все типы</option>
-                <option value="studio">Студии</option>
-                <option value="1">1-комнатные</option>
-                <option value="2">2-комнатные</option>
-                <option value="apartment">Апартаменты</option>
-              </select>
-              <button class="heat-toggle active" id="heatToggle">Тепловая карта</button>
               <button class="heat-toggle" id="districtsToggle">Районы</button>
               <button class="heat-toggle" id="favoritesOnlyToggle">Только избранное</button>
             </div>
           </div>
           <div id="map"></div>
-          <div class="map-legend">
-            <span style="font-size:.8rem;color:var(--text-dim);white-space:nowrap;">Низкие</span>
-            <div class="legend-bar"></div>
-            <span style="font-size:.8rem;color:var(--text-dim);white-space:nowrap;">Высокие цены</span>
-          </div>
         </div>
 
         <!-- Results -->
@@ -297,6 +284,13 @@
                 </button>
               </div>
 
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Оценка цены (нейросеть)</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Модель предсказывает «хорошая ли цена» и отмечает карточки зелёной/жёлтой/красной меткой. Для обучения используются кэш результатов поиска и избранное (нужно ≥20 объявлений с ценой). После обучения карточки обновляются при следующем поиске.</p>
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+                <button class="btn-export" id="trainModelBtn" onclick="trainModel()">Обучить модель</button>
+                <span id="mlStatus" style="font-size:.8rem;color:var(--text-dim);">загрузка…</span>
+              </div>
+
               <h3 style="font-size:1rem;margin:28px 0 12px;">Управление данными</h3>
               <div style="display:flex;flex-wrap:wrap;gap:12px;">
                 <button class="btn-danger" id="clearFavBtn" onclick="clearFavorites()">Удалить всё избранное</button>
@@ -365,9 +359,8 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

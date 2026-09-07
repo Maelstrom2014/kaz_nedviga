@@ -4,13 +4,11 @@
       attribution: '&copy; OpenStreetMap', maxZoom: 18
     }).addTo(map);
 
-    let heatLayer = null;
     let districtLayers = [];  // polygons + markers
     let listingMarkers = null;  // MarkerClusterGroup for listings
     let listingMarkerRefs = [];  // marker objects keyed by index
     let activeCardIdx = null;  // currently highlighted card
     let districtsVisible = true;
-    let heatVisible = true;
     let favoritesOnlyMode = false;  // when true, map shows only favorite markers
     let districtsData = [];
     let currentResults = [];
@@ -164,135 +162,12 @@
       return [43.2567 + Math.sin(angle) * radius, 76.9286 + Math.cos(angle) * radius];
     }
 
-    // === Heatmap ===
-    // Server-side heatmap re-runs the parsers, so it is expensive. Cache the
-    // response per (property_type, search params) and reuse it on layer
-    // toggles — only a real param change triggers a new request.
-    const heatmapCache = {};
-    function heatmapKey(propertyType, params) {
-      const p = Object.assign({}, params);
-      delete p.property_type;
-      return JSON.stringify({ t: propertyType, p });
-    }
-    async function loadHeatmap(propertyType, force) {
-      // Use current search form params
-      const params = getSearchParams();
-      params.property_type = propertyType;
-      const key = heatmapKey(propertyType, params);
-      if (!force && heatmapCache[key]) {
-        updateHeatmap(heatmapCache[key]);
-        return heatmapCache[key];
-      }
-      const resp = await fetch('/api/heatmap', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(params)
-      });
-      const data = await resp.json();
-      heatmapCache[key] = data;
-      updateHeatmap(data);
-      return data;
-    }
-
-    function updateHeatmap(data) {
-      if (heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
-      // Update district polygons with heat colors
-      districtLayers.forEach(l => map.removeLayer(l));
-      districtLayers = [];
-      data.district_stats.forEach(d => {
-        const intensity = d.intensity;
-        const color = heatColor(intensity, d.avg_price);
-        const polygon = L.polygon(d.polygon, {
-          color: color.border, weight: 2, opacity: 0.8,
-          fillColor: color.fill, fillOpacity: 0.35 + intensity * 0.4
-        });
-        if (districtsVisible) polygon.addTo(map);
-        const avgPriceStr = d.avg_price > 0 ? d.avg_price.toLocaleString('ru-RU') + ' тг' : 'нет данных';
-        // Use the server-side count (d.count) — it's the authoritative
-        // count from the heatmap's own parser run. The client-side
-        // countListingsInDistrict uses currentResults (a different dataset
-        // from /api/search) so it would show 0 before any search and a
-        // different number after — confusing and wrong here.
-        const count = d.count;
-        polygon.bindPopup(`
-          <div class="district-popup">
-            <h3>${d.name}</h3>
-            <p>${d.description || ''}</p>
-            <div class="stat"><span>Средняя цена:</span><b>${avgPriceStr}</b></div>
-            <div class="stat"><span>Объявлений:</span><b style="color:#22c55e;">${count}</b></div>
-          </div>
-        `);
-        const label = L.marker([d.lat, d.lon], {
-          icon: L.divIcon({
-            className: 'district-label',
-            html: `<div style="background:rgba(15,23,42,.85);color:#f1f5f9;padding:4px 8px;border-radius:6px;font-size:.75rem;white-space:nowrap;text-align:center;border:1px solid ${color.border};">
-              <b>${d.name}</b><br><span style="color:${color.text}">${avgPriceStr}</span>
-              ${count > 0 ? `<br><span style="color:#22c55e;font-weight:700;">квартир: ${count}</span>` : ''}
-            </div>`,
-            iconSize: [130, 55], iconAnchor: [65, 27]
-          })
-        });
-        if (districtsVisible) {
-          label.addTo(map);
-          districtLayers.push(polygon, label);
-        } else {
-          districtLayers.push(label);
-        }
-      });
-      // Heat points overlay
-      if (heatVisible && data.heat_points.some(p => p.price > 0)) {
-        const points = data.heat_points
-          .filter(p => p.price > 0)
-          .map(p => [p.lat, p.lon, p.intensity]);
-        heatLayer = L.heatLayer(points, {
-          radius: 60, blur: 35, maxZoom: 13,
-          gradient: {0.0: '#22c55e', 0.5: '#eab308', 1.0: '#ef4444'}
-        }).addTo(map);
-      }
-    }
-
-    function heatColor(intensity, price) {
-      // green -> yellow -> red
-      let r, g, b;
-      if (intensity < 0.5) {
-        const t = intensity * 2;
-        r = Math.round(34 + (234 - 34) * t);
-        g = Math.round(197 + (179 - 197) * t);
-        b = Math.round(94 + (8 - 94) * t);
-      } else {
-        const t = (intensity - 0.5) * 2;
-        r = Math.round(234 + (239 - 234) * t);
-        g = Math.round(179 + (68 - 179) * t);
-        b = Math.round(8 + (68 - 8) * t);
-      }
-      const fill = `rgb(${r},${g},${b})`;
-      const border = `rgb(${Math.min(r+40,255)},${Math.min(g+40,255)},${Math.min(b+40,255)})`;
-      const text = `rgb(${Math.min(r+80,255)},${Math.min(g+80,255)},${Math.min(b+80,255)})`;
-      return {fill, border, text};
-    }
-
     // === Toggles ===
-    // The toggles only show/hide layers — they must NOT re-run the parsers
-    // (loadHeatmap fetches from the server, which re-parses every site).
-    // Re-parsing on a mere visibility toggle made the buttons feel broken
-    // (long hangs, flicker, lost state). Reuse the cached heatmap data.
-    document.getElementById('heatToggle').addEventListener('click', function() {
-      heatVisible = !heatVisible;
-      this.classList.toggle('active', heatVisible);
-      const key = heatmapKey(document.getElementById('propertyType').value, getSearchParams());
-      const cached = heatmapCache[key];
-      if (cached) updateHeatmap(cached);
-      else if (!heatVisible && heatLayer) { map.removeLayer(heatLayer); heatLayer = null; }
-    });
+    // The toggles only show/hide layers — they never re-run the parsers.
     document.getElementById('districtsToggle').addEventListener('click', function() {
       districtsVisible = !districtsVisible;
       this.classList.toggle('active', districtsVisible);
-      const key = heatmapKey(document.getElementById('propertyType').value, getSearchParams());
-      const cached = heatmapCache[key];
-      if (cached) updateHeatmap(cached);
-      else drawDistricts();
-    });
-    document.getElementById('propertyType').addEventListener('change', function() {
-      loadHeatmap(this.value);
+      drawDistricts();
     });
     document.getElementById('favoritesOnlyToggle').addEventListener('click', async function() {
       favoritesOnlyMode = !favoritesOnlyMode;
@@ -379,7 +254,7 @@
 
     // Parser (crawl) vs search engine (filter) are split:
     //  - getCrawlParams(): sources + max_pages — collects listings into the cache.
-    //  - getSearchParams(): filter criteria for the heatmap cache key / server.
+    //  - getSearchParams(): filter criteria for the server.
     //  - applyClientFilters(): narrows the cached set live for the grid + map.
     function getCrawlParams() {
       const params = {};
@@ -492,7 +367,6 @@
             else { badge.style.display = 'none'; }
           }
         }
-        loadHeatmap(document.getElementById('propertyType').value).catch(hErr => console.error('loadHeatmap:', hErr));
       } catch (err) {
         alert('Ошибка поиска: ' + err.message);
       } finally {
@@ -583,12 +457,19 @@ function renderResults(results, total) {
         if (r.check_status) {
           checkBadge += `<div class="badge-check-status" title="${escapeHtml(r.check_status)}">${escapeHtml(r.check_status)}</div>`;
         }
+        let evalBadge = '';
+        if (r.price_eval && r.price_eval.verdict) {
+          const pct = Math.round(r.price_eval.prob * 100);
+          const cls = r.price_eval.good ? 'good' : (r.price_eval.verdict === 'дорого' ? 'bad' : 'mid');
+          evalBadge = `<div class="badge-eval ${cls}" title="Оценка нейросети: вероятность «хорошей цены» ${pct}%">${escapeHtml(r.price_eval.verdict)} ${pct}%</div>`;
+        }
         return `
           <div class="listing-card ${r.unavailable ? 'unavailable' : ''}" data-idx="${i}" onclick="focusMarker(${i})">
             <button class="btn-fav ${isSaved ? 'saved' : ''}" onclick="event.stopPropagation(); toggleFavorite(${i})" title="Сохранить в избранное">${isSaved ? '★' : '☆'}</button>
             ${newBadge}
             ${priceBadge}
             ${checkBadge}
+            ${evalBadge}
             ${photoHtml}
             <div class="listing-body">
               <div class="listing-title">${escapeHtml(r.title)}</div>
@@ -982,6 +863,7 @@ function renderResults(results, total) {
         document.getElementById('settingsTab').classList.add('active');
         markActiveTheme();
         loadPhotoCacheSetting();
+        loadMlStatus();
       }
     }
 
@@ -1199,11 +1081,65 @@ function renderResults(results, total) {
       }
     }
 
+    // --- Оценка цены (нейросеть): обучение и статус ---
+    let mlPollTimer = null;
+
+    function mlStatusText(st) {
+      if (st.status === 'running') return 'Обучение…';
+      if (st.status === 'error') return 'Ошибка: ' + (st.error || 'неизвестно');
+      const m = st.model || {};
+      if (st.status === 'done' && st.metrics) {
+        const f1 = (st.metrics.f1 || 0).toFixed(2);
+        const auc = (st.metrics.auc || 0).toFixed(2);
+        return `Модель обучена (${st.n_rows || '?'} объявл.) · F1 ${f1}, AUC ${auc}`;
+      }
+      if (m.available && m.metrics) {
+        return `Модель готова (${m.n_rows || '?'} объявл.) · F1 ${(m.metrics.f1 || 0).toFixed(2)}, AUC ${(m.metrics.auc || 0).toFixed(2)}`;
+      }
+      if (m.available) return 'Модель готова';
+      return 'Модель не обучена';
+    }
+
+    async function loadMlStatus() {
+      const el = document.getElementById('mlStatus');
+      if (!el) return;
+      try {
+        const resp = await fetch('/api/ml/status');
+        const st = await resp.json();
+        el.textContent = mlStatusText(st);
+        const btn = document.getElementById('trainModelBtn');
+        if (btn) btn.disabled = st.status === 'running';
+        if (st.status === 'running') {
+          if (!mlPollTimer) mlPollTimer = setInterval(loadMlStatus, 1500);
+        } else if (mlPollTimer) {
+          clearInterval(mlPollTimer);
+          mlPollTimer = null;
+        }
+      } catch (err) {
+        el.textContent = 'Статус недоступен';
+      }
+    }
+
+    async function trainModel() {
+      const btn = document.getElementById('trainModelBtn');
+      btn.disabled = true;
+      document.getElementById('mlStatus').textContent = 'Запуск обучения…';
+      try {
+        const resp = await fetch('/api/ml/train', {method: 'POST'});
+        const st = await resp.json();
+        if (resp.status === 409) {
+          document.getElementById('mlStatus').textContent = 'Обучение уже идёт…';
+        }
+      } catch (err) {
+        document.getElementById('mlStatus').textContent = 'Ошибка запуска: ' + err.message;
+      }
+      if (!mlPollTimer) mlPollTimer = setInterval(loadMlStatus, 1500);
+    }
+
     async function toggleFavorite(index) {
       const r = displayedResults[index];
       if (!r) return;
-      const key = r.listing_key;
-      if (!key) return;
+      const key = r.listing_key;      if (!key) return;
       try {
         if (savedKeys.has(key)) {
           await fetch(`/api/favorites/${key}`, {method: 'DELETE'});
@@ -1488,7 +1424,6 @@ function renderResults(results, total) {
     if (ratesTimer) clearInterval(ratesTimer);
     ratesTimer = setInterval(loadRates, 600000);
     loadDistricts().then(() => {
-      loadHeatmap('all');
       // Load cached results after districts (needed for map markers)
       loadCachedResults();
     });

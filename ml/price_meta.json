@@ -1,0 +1,164 @@
+{
+  "numeric_features": [
+    "price",
+    "rooms",
+    "area",
+    "floor",
+    "total_floors",
+    "price_per_m2",
+    "price_per_room",
+    "floor_ratio",
+    "year_built",
+    "ceiling_height",
+    "n_photos",
+    "desc_length",
+    "desc_words",
+    "deposit",
+    "commission_percent",
+    "owner_probability",
+    "views",
+    "quality_score",
+    "renovation_grade",
+    "furniture_level"
+  ],
+  "categorical_features": [
+    "source",
+    "district",
+    "deal_type",
+    "listing_type",
+    "building_type",
+    "bathroom_type",
+    "utilities",
+    "currency"
+  ],
+  "medians": {
+    "price": 180000.0,
+    "rooms": 1.0,
+    "area": 38.0,
+    "floor": 3.0,
+    "total_floors": 6.0,
+    "price_per_m2": 5668.4,
+    "price_per_room": 200000.0,
+    "floor_ratio": 0.6,
+    "year_built": 2022.0,
+    "ceiling_height": 2.75,
+    "n_photos": 0.0,
+    "desc_length": 0.0,
+    "desc_words": 0.0,
+    "deposit": 40000.0,
+    "commission_percent": 0.0,
+    "owner_probability": 0.5,
+    "views": 468.0,
+    "quality_score": 50.0,
+    "renovation_grade": 3.0,
+    "furniture_level": 0.0
+  },
+  "means": {
+    "price": 1152614.4306651636,
+    "rooms": 1.0383314543404736,
+    "area": 38.15422773393461,
+    "floor": 3.2232243517474632,
+    "total_floors": 6.231116121758737,
+    "price_per_m2": 20874.689515219845,
+    "price_per_room": 701661.0296505073,
+    "floor_ratio": 0.59728297632469,
+    "year_built": 2021.935738444194,
+    "ceiling_height": 2.750225479143179,
+    "n_photos": 2.2919954904171362,
+    "desc_length": 75.73280721533258,
+    "desc_words": 10.726042841037204,
+    "deposit": 39943.630214205186,
+    "commission_percent": 0.0,
+    "owner_probability": 0.496054114994363,
+    "views": 556.3100338218715,
+    "quality_score": 49.859075535512964,
+    "renovation_grade": 2.9853438556933485,
+    "furniture_level": 0.0
+  },
+  "stds": {
+    "price": 8286057.104017759,
+    "rooms": 0.24832410212932585,
+    "area": 7.545018713027146,
+    "floor": 1.3964851910374576,
+    "total_floors": 1.6282529473943461,
+    "price_per_m2": 103150.18743511895,
+    "price_per_room": 3584686.7483754763,
+    "floor_ratio": 0.1274940676513762,
+    "year_built": 1.5544738834971443,
+    "ceiling_height": 0.008880701507692433,
+    "n_photos": 3.833539339134552,
+    "desc_length": 198.48919126164063,
+    "desc_words": 28.22890066015129,
+    "deposit": 1791.619445516777,
+    "commission_percent": 1.0,
+    "owner_probability": 0.036952533654611985,
+    "views": 1109.8798505622083,
+    "quality_score": 4.254765143734931,
+    "renovation_grade": 0.20371263810138276,
+    "furniture_level": 1.0
+  },
+  "vocabs": {
+    "source": [
+      "2gis",
+      "etagi.com",
+      "kn.kz",
+      "krisha.kz",
+      "olx.kz",
+      "telegram"
+    ],
+    "district": [
+      "",
+      "алатауский",
+      "алмалинский",
+      "ауэзовский",
+      "бостандыкский",
+      "жетысуский",
+      "медеуский",
+      "микрорайон саялы",
+      "наурызбайский",
+      "проспект назарбаева",
+      "улица жунисова"
+    ],
+    "deal_type": [
+      "",
+      "long_term"
+    ],
+    "listing_type": [
+      "",
+      "private_room",
+      "roommate",
+      "unknown",
+      "whole_apartment"
+    ],
+    "building_type": [
+      "",
+      "монолит",
+      "панель"
+    ],
+    "bathroom_type": [
+      "",
+      "bath",
+      "combined",
+      "shower"
+    ],
+    "utilities": [
+      "",
+      "separate"
+    ],
+    "currency": [
+      "тг"
+    ]
+  },
+  "n_input": 54,
+  "label_rule": "price <= median(rooms, district, area_bucket)",
+  "threshold": 0.5,
+  "seed": 42,
+  "metrics": {
+    "accuracy": 0.5876,
+    "precision": 0.75,
+    "recall": 0.3474,
+    "f1": 0.4748,
+    "auc": 0.804
+  },
+  "n_rows": 887
+}

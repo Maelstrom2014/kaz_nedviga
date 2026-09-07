@@ -12,6 +12,7 @@ data/favorites.db-wal
 data/last_results.json
 data/rates.json
 data/settings.json
+data/features.csv
 
 # Photo disk cache
 cache/

@@ -375,169 +375,10 @@ class TestApiSearch:
 
 
 # ============================================================
-# API heatmap endpoint — mocked
+# Point-in-polygon matching (was used by the heatmap API)
 # ============================================================
 
-class TestApiHeatmap:
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_returns_structure(self, mock_get, client):
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = [
-            Listing(title="apt", price=150000, source="test.kz",
-                     address="Алмалинский район"),
-        ]
-        mock_get.return_value = [mock_parser]
-
-        resp = client.post("/api/heatmap", json={"property_type": "all"})
-        data = resp.get_json()
-        assert resp.status_code == 200
-        assert "heat_points" in data
-        assert "district_stats" in data
-        assert "property_type" in data
-        assert "total_listings" in data
-        assert len(data["heat_points"]) == 8
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_avg_price_calculation(self, mock_get, client):
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = [
-            Listing(title="1", price=100000, address="Алмалинский"),
-            Listing(title="2", price=200000, address="Алмалинский"),
-            Listing(title="3", price=300000, address="Бостандыкский"),
-        ]
-        mock_get.return_value = [mock_parser]
-
-        resp = client.post("/api/heatmap", json={"property_type": "all"})
-        data = resp.get_json()
-        almalinsky = next(d for d in data["district_stats"] if d["name"] == "Алмалинский")
-        assert almalinsky["avg_price"] == 150000  # (100k+200k)/2
-        assert almalinsky["count"] == 2
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_intensity_range(self, mock_get, client):
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = [
-            Listing(title="1", price=100000, address="Алмалинский"),
-            Listing(title="2", price=200000, address="Бостандыкский"),
-        ]
-        mock_get.return_value = [mock_parser]
-
-        resp = client.post("/api/heatmap", json={"property_type": "all"})
-        data = resp.get_json()
-        for stat in data["district_stats"]:
-            assert 0 <= stat["intensity"] <= 1.0
-        # The district with highest price should have intensity 1.0
-        max_intensity_district = max(data["district_stats"], key=lambda x: x["avg_price"])
-        assert max_intensity_district["intensity"] == 1.0
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_no_data(self, mock_get, client):
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = []
-        mock_get.return_value = [mock_parser]
-
-        resp = client.post("/api/heatmap", json={"property_type": "all"})
-        data = resp.get_json()
-        for stat in data["district_stats"]:
-            assert stat["avg_price"] == 0
-            assert stat["count"] == 0
-            assert stat["intensity"] == 0
-
-    @patch("webapp.core.get_all_parsers")
-    @pytest.mark.parametrize("ptype,expected_rooms", [
-        ("studio", [0]),
-        ("1", [1]),
-        ("2", [2]),
-    ])
-    def test_heatmap_property_type_rooms(self, mock_get, ptype, expected_rooms, client):
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = []
-        mock_get.return_value = [mock_parser]
-
-        client.post("/api/heatmap", json={"property_type": ptype})
-        called_params = mock_parser.run.call_args[0][0]
-        assert called_params.rooms == expected_rooms
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_property_type_apartment(self, mock_get, client):
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = []
-        mock_get.return_value = [mock_parser]
-
-        client.post("/api/heatmap", json={"property_type": "apartment"})
-        called_params = mock_parser.run.call_args[0][0]
-        assert "апартамент" in called_params.query
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_property_type_all_no_filter(self, mock_get, client):
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = []
-        mock_get.return_value = [mock_parser]
-
-        client.post("/api/heatmap", json={"property_type": "all"})
-        called_params = mock_parser.run.call_args[0][0]
-        assert called_params.rooms == []
-        assert called_params.query == ""
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_no_almalinsky_dump(self, mock_get, client):
-        """Unmatched listings must NOT default to Алмалинский."""
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = [
-            Listing(title="unmatched", price=500000, source="test.kz",
-                    address="г. Алматы, ул. Пушкина"),
-        ]
-        mock_get.return_value = [mock_parser]
-
-        resp = client.post("/api/heatmap", json={"property_type": "all"})
-        data = resp.get_json()
-        almalinsky = next(d for d in data["district_stats"] if d["name"] == "Алмалинский")
-        assert almalinsky["count"] == 0
-        assert data["unmatched_count"] == 1
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_point_in_polygon(self, mock_get, client):
-        """Listings with coords matched by point-in-polygon, not text."""
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        # Bare address, but coords land inside Жетысуский polygon (~43.330, 76.965)
-        mock_parser.run.return_value = [
-            Listing(title="apt", price=100000, source="test.kz",
-                    address="Алматы", lat=43.330, lon=76.965),
-        ]
-        mock_get.return_value = [mock_parser]
-
-        resp = client.post("/api/heatmap", json={"property_type": "all"})
-        data = resp.get_json()
-        zhetysu = next(d for d in data["district_stats"] if d["name"] == "Жетысуский")
-        assert zhetysu["count"] == 1
-        assert data["unmatched_count"] == 0
-
-    @patch("webapp.core.get_all_parsers")
-    def test_heatmap_word_boundary_not_street_name(self, mock_get, client):
-        """'ул. Ауэзова' must NOT match 'Ауэзовский' district."""
-        mock_parser = MagicMock()
-        mock_parser.name = "test.kz"
-        mock_parser.run.return_value = [
-            Listing(title="apt", price=100000, source="test.kz",
-                    address="г. Алматы, ул. Ауэзова"),
-        ]
-        mock_get.return_value = [mock_parser]
-
-        resp = client.post("/api/heatmap", json={"property_type": "all"})
-        data = resp.get_json()
-        auezov = next(d for d in data["district_stats"] if d["name"] == "Ауэзовский")
-        assert auezov["count"] == 0
-        assert data["unmatched_count"] == 1
+class TestPointInPolygon:
 
     def test_point_in_polygon_inside(self):
         from app import _point_in_polygon
@@ -574,11 +415,8 @@ class TestIndexPage:
         resp = client.get("/")
         assert b"\xd0\x90\xd0\xbb\xd0\xbc\xd0\xb0\xd0\xbb\xd0\xb8\xd0\xbd\xd1\x81\xd0\xba\xd0\xb8\xd0\xb9" in resp.data
 
-    def test_index_contains_map_div(self, client):
+    def test_index_contains_map_controls(self, client):
         resp = client.get("/")
         assert b'id="map"' in resp.data
-
-    def test_index_contains_heatmap_controls(self, client):
-        resp = client.get("/")
-        assert b"propertyType" in resp.data
-        assert b"\xd0\xa1\xd1\x82\xd1\x83\xd0\xb4\xd0\xb8\xd0\xb8" in resp.data  # "Студии"
+        assert b"districtsToggle" in resp.data
+        assert b"favoritesOnlyToggle" in resp.data
