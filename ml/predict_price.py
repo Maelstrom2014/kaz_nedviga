@@ -16,49 +16,14 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from features import feature_row  # noqa: E402
-from ml.train_price_model import (  # noqa: E402
-    DEFAULT_CSV, META_PATH, MODEL_PATH, Preprocessor, to_float,
-)
-
-DEFAULT_MODEL = MODEL_PATH
+from ml.train_price_model import DEFAULT_CSV, to_float  # noqa: E402
 
 
-def load_model():
-    import torch
-
-    if not MODEL_PATH.exists() or not META_PATH.exists():
-        print("Модель не найдена. Сначала: python ml/train_price_model.py")
-        return None, None
-    meta = json.loads(META_PATH.read_text(encoding="utf-8"))
-    pp = Preprocessor()
-    pp.medians = meta["medians"]
-    pp.means = meta["means"]
-    pp.stds = meta["stds"]
-    pp.vocabs = meta["vocabs"]
-    if pp.n_input != meta["n_input"]:
-        print("Размерность модели не совпадает с метаданными — переобучите модель.")
-        return None, None, None
-    import torch.nn as nn
-
-    model = nn.Sequential(
-        nn.Linear(meta["n_input"], 64), nn.ReLU(), nn.Dropout(0.0),
-        nn.Linear(64, 32), nn.ReLU(), nn.Dropout(0.0),
-        nn.Linear(32, 1),
-    )
-    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-    model.eval()
-    return model, meta, pp
-
-
-def predict_rows(model, meta, pp: Preprocessor, rows: list[dict]) -> list[tuple[dict, float, str]]:
-    import torch
-
+def predict_rows(predict_fn, pp, meta, rows: list[dict]) -> list[tuple[dict, float, str]]:
     th = meta.get("threshold", 0.5)
     out = []
-    with torch.no_grad():
-        X = torch.tensor([pp.row_vector(r) for r in rows],
-                         dtype=torch.float32)
-        probs = torch.sigmoid(model(X)).squeeze(1).tolist()
+    feats = [pp.row_vector(r) for r in rows]
+    probs = predict_fn(feats) if feats else []
     for r, p in zip(rows, probs):
         if p >= th + 0.1:
             verdict = "хорошая цена"
@@ -81,9 +46,13 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=15, help="сколько строк показать")
     args = ap.parse_args()
 
-    model, meta, pp = load_model()
-    if model is None:
+    from ml.train_price_model import load_serving_model
+
+    predict_fn, meta = load_serving_model()
+    if predict_fn is None:
+        print("Модель не найдена. Сначала: python ml/train_price_model.py")
         return 1
+    pp = _build_pp(meta)
 
     if args.json:
         with open(args.json, encoding="utf-8") as f:
@@ -100,14 +69,23 @@ def main() -> int:
             rows = list(csv.DictReader(f))
         rows = [r for r in rows if (r.get("price") or "").strip()]
 
-    results = predict_rows(model, meta, pp, rows)
-    good = sum(1 for _, p, _ in results if p >= 0.6)
+    results = predict_rows(predict_fn, pp, meta, rows)
+    good = sum(1 for _, p, _ in results if p >= meta.get("threshold", 0.5) + 0.1)
     print(f"Всего: {len(results)}, «хорошая цена»: {good} ({good / max(len(results), 1):.0%})")
     results.sort(key=lambda x: -x[1])
     for r, p, verdict in results[:args.top]:
         title = (r.get("title") or "")[:60]
-        print(f"  {p:5.2f} {verdict:<13} {to_float(r.get('price')):>10.0f} тг  {title}")
+        price = to_float(r.get("price"))
+        print(f"  {p:5.2f} {verdict:<13} "
+              f"{price:,.0f} тг  {title}".replace(",", " ") if price else
+              f"  {p:5.2f} {verdict:<13} {'—':>12}  {title}")
     return 0
+
+
+def _build_pp(meta):
+    from ml.train_price_model import _pp_from_meta
+
+    return _pp_from_meta(meta)
 
 
 if __name__ == "__main__":

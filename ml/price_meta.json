@@ -1,12 +1,10 @@
 {
+  "model_type": "sklearn_histgb",
   "numeric_features": [
-    "price",
     "rooms",
     "area",
     "floor",
     "total_floors",
-    "price_per_m2",
-    "price_per_room",
     "floor_ratio",
     "year_built",
     "ceiling_height",
@@ -32,13 +30,10 @@
     "currency"
   ],
   "medians": {
-    "price": 180000.0,
     "rooms": 1.0,
     "area": 40.0,
     "floor": 3.0,
     "total_floors": 6.0,
-    "price_per_m2": 5714.3,
-    "price_per_room": 200000.0,
     "floor_ratio": 0.6,
     "year_built": 2022.0,
     "ceiling_height": 2.75,
@@ -54,13 +49,10 @@
     "furniture_level": 0.0
   },
   "means": {
-    "price": 1126197.8260869565,
     "rooms": 1.0902173913043478,
     "area": 40.77,
     "floor": 3.2891304347826087,
     "total_floors": 6.3119565217391305,
-    "price_per_m2": 20384.590652173913,
-    "price_per_room": 683168.6594565217,
     "floor_ratio": 0.598108695652174,
     "year_built": 2021.9380434782609,
     "ceiling_height": 2.7502173913043477,
@@ -76,13 +68,10 @@
     "furniture_level": 0.0
   },
   "stds": {
-    "price": 8137342.465415339,
     "rooms": 0.36935895778705913,
     "area": 10.973385391779592,
     "floor": 1.52838765013125,
     "total_floors": 1.8140359993134902,
-    "price_per_m2": 101315.79154629009,
-    "price_per_room": 3521155.3285762467,
     "floor_ratio": 0.13448900524980206,
     "year_built": 1.5263869239442212,
     "ceiling_height": 0.008720074400057206,
@@ -152,17 +141,16 @@
       "тг"
     ]
   },
-  "n_input": 57,
-  "label_rule": "price <= median(rooms, district, area_bucket)",
-  "threshold": 0.34,
+  "n_input": 54,
+  "label_rule": "price(/m2) in bottom 35% of group",
+  "threshold": 0.4,
   "seed": 42,
   "metrics": {
-    "accuracy": 0.5847,
-    "precision": 0.5576,
-    "recall": 0.9684,
-    "f1": 0.7077,
-    "auc": 0.7341,
-    "threshold": 0.34
+    "accuracy": 0.4837,
+    "precision": 0.3611,
+    "recall": 0.9455,
+    "f1": 0.5226,
+    "auc": 0.6684
   },
   "n_rows": 920
 }

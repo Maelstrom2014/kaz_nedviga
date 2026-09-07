@@ -71,10 +71,11 @@ A web app for searching apartment rentals across 6 Almaty real-estate sites, wit
 
 - **Feature extraction** (`features.py`): ~60 tags parsed from title/description (RU/KZ patterns) — renovation grade, furniture level, appliances, bathroom type, building type, year built, ceiling height, parking/security/playground, view, near metro/school/park, "urgent", "no commission", "owner" and more; plus derived fields (price per m² / per room, floor ratio, first/last floor, district by coordinates, photo count, description stats).
 - **Combined CSV** (`features_csv.py`): one flat `data/features.csv` from the results cache (`data/last_results.json`) and/or favorites (SQLite). Flags: `--favorites`, `--only-favorites`, `--with-price-only`, `--min-price`, `--out`.
-- **Price-quality neural net** (`ml/train_price_model.py`): PyTorch MLP trained to predict whether a listing is a **good price** (auto-label: price ≤ median of similar listings by rooms/district/area bucket). Saves `ml/price_model.pt` + `ml/price_meta.json`, prints accuracy/precision/recall/F1/AUC.
+- **Price-quality model** (`ml/train_price_model.py`): by default **HistGradientBoosting** (winner of the OOF benchmark in `ml/experiments.py` — beats the PyTorch MLP on this data volume; MLP kept via `--model mlp`). Label = price (or price/m²) in the bottom 35% of its peer group (quantile; `--labels median` for the old rule). Price-derived features are excluded to avoid label leakage. Saves `ml/price_model.pkl` + `ml/price_meta.json` with an F1-optimal decision threshold.
 - **Inference** (`ml/predict_price.py`): scores a CSV (or a single JSON listing) and prints the top deals with verdicts «хорошая цена / спорно / дорого».
+- **Benchmark** (`ml/experiments.py`): stratified 5-fold OOF comparison of label schemes / models / features — rerun after changing the pipeline.
 - **Built into the UI**: search cards get a colored badge (green «хорошая цена» / yellow «спорно» / red «дорого» with the probability); **Settings → "Оценка цены (нейросеть)"** has an **«Обучить модель»** button that rebuilds `data/features.csv` from the results cache + favorites, retrains in a background thread and reports F1/AUC (API: `POST /api/ml/train`, `GET /api/ml/status`).
-- Requires `torch` (optional): `pip install torch`.
+- Requires `scikit-learn` (default) and optionally `torch` (for `--model mlp`): `pip install scikit-learn torch`.
 
 ### Interface
 

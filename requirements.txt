@@ -9,5 +9,6 @@ pytest>=8.0.0
 # Optional: OLX phone reveal via headless browser (off by default;
 # olx_phone_playwright setting). Install browser: playwright install chromium
 # playwright>=1.49.0
-# Optional: price-quality neural net (ml/train_price_model.py, features_csv.py)
-# torch>=2.0.0
+# Optional: price-quality model (ml/train_price_model.py, features_csv.py)
+# scikit-learn>=1.4.0   # default model (HistGradientBoosting)
+# torch>=2.0.0          # only for --model mlp

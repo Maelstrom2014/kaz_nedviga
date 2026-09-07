@@ -1,9 +1,9 @@
 """Скоринг объявлений обученной моделью «хорошая цена или нет».
 
-Модель (ml/price_model.pt + ml/price_meta.json) обучается скриптом
-``ml/train_price_model.py`` или кнопкой «Обучить модель» в настройках.
-Здесь — ленивая загрузка с авто-reload при изменении файла метаданных,
-чтобы после переобучения не требовался перезапуск сервера.
+Модель обучается скриптом ``ml/train_price_model.py`` или кнопкой
+«Обучить модель» в настройках. Здесь — ленивая загрузка с авто-reload
+при изменении файлов, чтобы после переобучения не требовался перезапуск.
+Поддерживаются обе модели из meta.model_type: sklearn_histgb и torch_mlp.
 """
 from __future__ import annotations
 
@@ -12,11 +12,18 @@ import logging
 from pathlib import Path
 
 from features import feature_row
-from ml.train_price_model import META_PATH, MODEL_PATH, Preprocessor
+from ml.train_price_model import HISTGB_PATH, META_PATH, MODEL_PATH
 
 log = logging.getLogger("app")
 
-_CACHE: dict = {"mtime": None, "model": None, "pp": None, "threshold": 0.5}
+_CACHE: dict = {"key": None, "predict": None, "pp": None, "threshold": 0.5}
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _verdict(prob: float, threshold: float) -> tuple[bool, str]:
@@ -28,48 +35,40 @@ def _verdict(prob: float, threshold: float) -> tuple[bool, str]:
 
 
 def _load():
-    """Лениво загрузить модель; перезагрузить при обновлении файлов."""
-    if not (MODEL_PATH.exists() and META_PATH.exists()):
-        _CACHE.update(mtime=None, model=None, pp=None)
-        return None, None
-    mtime = (MODEL_PATH.stat().st_mtime, META_PATH.stat().st_mtime)
-    if _CACHE["model"] is not None and _CACHE["mtime"] == mtime:
-        return _CACHE["model"], _CACHE["pp"]
-    try:
-        import torch
-        import torch.nn as nn
+    """Лениво загрузить модель; перезагрузить при обновлении файлов.
 
-        meta = json.loads(META_PATH.read_text(encoding="utf-8"))
-        pp = Preprocessor()
-        pp.medians = meta["medians"]
-        pp.means = meta["means"]
-        pp.stds = meta["stds"]
-        pp.vocabs = meta["vocabs"]
-        if pp.n_input != meta["n_input"]:
-            log.warning("[ml] meta n_input mismatch — model skipped")
-            return None, None
-        model = nn.Sequential(
-            nn.Linear(meta["n_input"], 64), nn.ReLU(), nn.Dropout(0.0),
-            nn.Linear(64, 32), nn.ReLU(), nn.Dropout(0.0),
-            nn.Linear(32, 1),
-        )
-        model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-        model.eval()
-        _CACHE.update(mtime=mtime, model=model, pp=pp,
-                      threshold=meta.get("threshold", 0.5))
-        log.info("[ml] price model loaded (trained on %s rows)",
-                 meta.get("n_rows"))
-        return model, pp
+    Возвращает (predict_batch, pp, threshold) или (None, None, None).
+    """
+    key = (_mtime(HISTGB_PATH), _mtime(MODEL_PATH), _mtime(META_PATH))
+    if _CACHE["predict"] is not None and _CACHE["key"] == key:
+        return _CACHE["predict"], _CACHE["pp"], _CACHE["threshold"]
+    if not META_PATH.exists() or (key[0] == 0.0 and key[1] == 0.0):
+        _CACHE.update(key=key, predict=None, pp=None)
+        return None, None, None
+    try:
+        from ml.train_price_model import _pp_from_meta, load_serving_model
+
+        predict, meta = load_serving_model()
+        if predict is None:
+            _CACHE.update(key=key, predict=None, pp=None)
+            return None, None, None
+        pp = _pp_from_meta(meta)
+        threshold = meta.get("threshold", 0.5)
+        _CACHE.update(key=key, predict=predict, pp=pp, threshold=threshold)
+        log.info("[ml] price model loaded (%s, trained on %s rows)",
+                 meta.get("model_type"), meta.get("n_rows"))
+        return predict, pp, threshold
     except Exception as exc:
         log.warning("[ml] price model load failed: %s", exc)
-        _CACHE.update(mtime=None, model=None, pp=None)
-        return None, None
+        _CACHE.update(key=key, predict=None, pp=None)
+        return None, None, None
 
 
 def model_info() -> dict:
     """Состояние модели для UI: есть ли файлы и когда обучалась."""
     info = {
-        "available": bool(MODEL_PATH.exists() and META_PATH.exists()),
+        "available": bool(META_PATH.exists()
+                          and (MODEL_PATH.exists() or HISTGB_PATH.exists())),
         "metrics": None, "n_rows": None, "trained_at": None,
     }
     if info["available"]:
@@ -88,10 +87,9 @@ def score_rows(rows: list[dict]) -> list[dict | None]:
 
     Возвращает список той же длины: dict или None (нет модели/цены).
     """
-    model, pp = _load()
-    if model is None or not rows:
+    predict, pp, th = _load()
+    if predict is None or not rows:
         return [None] * len(rows)
-    th = _CACHE["threshold"]
     scored: list[dict | None] = [None] * len(rows)
     vec_rows: list[tuple[int, dict]] = []
     feats: list[list[float]] = []
@@ -105,11 +103,7 @@ def score_rows(rows: list[dict]) -> list[dict | None]:
         vec_rows.append((i, f))
         feats.append(pp.row_vector(f))
     if vec_rows:
-        import torch
-
-        with torch.no_grad():
-            X = torch.tensor(feats, dtype=torch.float32)
-            probs = torch.sigmoid(model(X)).squeeze(1).tolist()
+        probs = predict(feats)
         for (i, f), p in zip(vec_rows, probs):
             good, verdict = _verdict(float(p), th)
             scored[i] = {
