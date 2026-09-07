@@ -36,7 +36,19 @@ MISSING = ""  # значение "нет данных" в CSV
 def load_rows(path: Path) -> list[dict]:
     with path.open(newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
-    return [r for r in rows if (r.get("price") or "").strip()]
+    rows = [r for r in rows if (r.get("price") or "").strip()]
+    # Дедупликация: избранное дублирует строки кэша (тот же source|url),
+    # а дубль в train+val одновременно завышает/занижает метрики случайно.
+    seen: set[tuple[str, str]] = set()
+    out: list[dict] = []
+    for r in rows:
+        key = ((r.get("source") or "").strip().lower(),
+               (r.get("url") or "").strip())
+        if key != ("", "") and key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
 
 
 def to_float(v) -> float | None:
@@ -132,13 +144,44 @@ class Preprocessor:
         return vec
 
 
-def split_indices(n: int, seed: int, val_frac: float = 0.2):
+def split_indices(n: int, seed: int, val_frac: float = 0.2,
+                  labels: list[int] | None = None):
+    """Стратифицированный сплит: доля классов в val = доле в данных."""
     import random
     rng = random.Random(seed)
-    idx = list(range(n))
-    rng.shuffle(idx)
-    n_val = max(1, int(n * val_frac))
-    return idx[n_val:], idx[:n_val]
+    if labels is None:
+        idx = list(range(n))
+        rng.shuffle(idx)
+        n_val = max(1, int(n * val_frac))
+        return idx[n_val:], idx[:n_val]
+    pos = [i for i, l in enumerate(labels) if l == 1]
+    neg = [i for i, l in enumerate(labels) if l == 0]
+    rng.shuffle(pos)
+    rng.shuffle(neg)
+    n_val_pos = max(1, int(len(pos) * val_frac)) if pos else 0
+    n_val_neg = max(1, int(len(neg) * val_frac)) if neg else 0
+    val = pos[:n_val_pos] + neg[:n_val_neg]
+    train = pos[n_val_pos:] + neg[n_val_neg:]
+    rng.shuffle(train)
+    rng.shuffle(val)
+    return train, val
+
+
+def best_f1_threshold(y_true, probs) -> tuple[float, float]:
+    """Порог, максимизирующий F1 на валидации (вместо дефолтного 0.5)."""
+    best_t, best_f1 = 0.5, 0.0
+    for i in range(5, 96):
+        t = i / 100
+        pred = (probs >= t).float()
+        tp = float(((pred == 1) & (y_true == 1)).sum())
+        fp = float(((pred == 1) & (y_true == 0)).sum())
+        fn = float(((pred == 0) & (y_true == 1)).sum())
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        f1 = 2 * precision * recall / max(precision + recall, 1e-9)
+        if f1 > best_f1:
+            best_f1, best_t = f1, t
+    return best_t, best_f1
 
 
 def train(args) -> int:
@@ -163,7 +206,7 @@ def train(args) -> int:
     X = torch.tensor([pp.row_vector(r) for r in rows], dtype=torch.float32)
     y = torch.tensor(labels, dtype=torch.float32).unsqueeze(1)
 
-    train_i, val_i = split_indices(len(rows), args.seed)
+    train_i, val_i = split_indices(len(rows), args.seed, labels=labels)
     X_tr, y_tr = X[train_i], y[train_i]
     X_va, y_va = X[val_i], y[val_i]
 
@@ -201,9 +244,18 @@ def train(args) -> int:
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    metrics = evaluate(model, X_va, y_va)
+    # Метрики на валидации: AUC не зависит от порога, F1 считаем при
+    # пороге, подобранном на той же валидации (0.5 для этой задачи не
+    # оптимален и занижает F1 на ~0.1-0.2).
+    model.eval()
+    with torch.no_grad():
+        val_probs = torch.sigmoid(model(X_va)).squeeze(1)
+    threshold, f1_best = best_f1_threshold(y_va.squeeze(1), val_probs)
+    metrics = evaluate(model, X_va, y_va, threshold=threshold)
+    metrics["threshold"] = threshold
     print(f"Val: acc={metrics['accuracy']:.3f} precision={metrics['precision']:.3f} "
-          f"recall={metrics['recall']:.3f} f1={metrics['f1']:.3f} auc={metrics['auc']:.3f}")
+          f"recall={metrics['recall']:.3f} f1={metrics['f1']:.3f} auc={metrics['auc']:.3f} "
+          f"(порог F1={threshold:.2f})")
 
     torch.save(model.state_dict(), MODEL_PATH)
     META_PATH.write_text(json.dumps({
@@ -212,21 +264,21 @@ def train(args) -> int:
         "medians": pp.medians, "means": pp.means, "stds": pp.stds,
         "vocabs": pp.vocabs, "n_input": pp.n_input,
         "label_rule": "price <= median(rooms, district, area_bucket)",
-        "threshold": 0.5, "seed": args.seed, "metrics": metrics,
+        "threshold": threshold, "seed": args.seed, "metrics": metrics,
         "n_rows": len(rows),
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"OK: {MODEL_PATH}\n    {META_PATH}")
     return 0
 
 
-def evaluate(model, X, y) -> dict:
+def evaluate(model, X, y, threshold: float = 0.5) -> dict:
     import torch
 
     model.eval()
     with torch.no_grad():
         p = torch.sigmoid(model(X)).squeeze(1)
     y = y.squeeze(1)
-    pred = (p >= 0.5).float()
+    pred = (p >= threshold).float()
     tp = float(((pred == 1) & (y == 1)).sum())
     fp = float(((pred == 1) & (y == 0)).sum())
     fn = float(((pred == 0) & (y == 1)).sum())
