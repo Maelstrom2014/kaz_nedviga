@@ -135,7 +135,7 @@ Open http://localhost:5000
 python -m pytest tests/ -v
 ```
 
-**536 tests**: parsers (6 sites), models, utilities, factory, export, API, districts, exchange rates, favorites, settings, photo enrichment, coordinates.
+**800 tests**: parsers (6 sites), models, utilities, factory, export, API, districts, exchange rates, favorites, settings, photo enrichment, coordinates, feature extraction, ML routes.
 
 ```bash
 # Quick check
@@ -150,9 +150,24 @@ python -m pytest tests/test_photo_enrichment.py -v --tb=short
 ```
 kaz_nedviga/
 ├── app.py                        Flask application composition root, startup side effects
+├── features.py                   Feature/tag extraction from listing title+description
+├── features_csv.py               Combined data/features.csv builder (cache + favorites)
 ├── export_utils.py               Export TXT/PDF, on-disk photo cache
 ├── rates.py                      Exchange rates (KZT -> RUB/USD/EUR)
 ├── db.py                         SQLite layer (favorites, price history)
+├── scheduler.py                  Background parsing scheduler
+│
+├── webapp/
+│   ├── core.py                   Shared state/helpers (single monkeypatch target)
+│   └── routes/                   Blueprints: search, settings, ml, favorites, proxy, rates, scheduler
+│
+├── ml/
+│   ├── train_price_model.py      Price-quality model training (HistGB default / MLP)
+│   ├── predict_price.py          CLI inference over CSV / single JSON listing
+│   ├── scorer.py                 Lazy model loading + batch scoring for the webapp
+│   ├── experiments.py            5-fold OOF benchmark of labels/models/features
+│   ├── price_model.pkl           Trained HistGB model artifact
+│   └── price_meta.json           Feature stats, threshold, metrics
 │
 ├── parsers/
 │   ├── __init__.py
@@ -165,19 +180,25 @@ kaz_nedviga/
 │   ├── etagi.py                  etagi.com (+ gallery from CDN, SVG state)
 │   └── telegram.py               Telegram (4 channels, KZ->RU glossary)
 │
-├── data/
-│   ├── __init__.py
+├── geo/
 │   ├── districts.py              8 Almaty districts with polygons
-│   ├── settings.json             Theme, parameters, max_pages, photo_cache_mb
+│   └── buildings.py              Building/geo enrichment
+│
+├── data/                         (runtime, gitignored except __init__)
 │   ├── last_results.json         Search results cache
+│   ├── features.csv              Combined feature dataset for ML
 │   ├── favorites.db              SQLite (favorites + price history)
-│   └── rates.json                Exchange rates cache
+│   └── settings.json             Theme, parameters, max_pages, photo_cache_mb
 │
 ├── cache/
 │   └── photos/                   On-disk image cache (SHA1 of URL)
 │
 ├── templates/
 │   └── index.html                 SPA: map, results, favorites, settings
+│
+├── static/
+│   ├── js/app.js                 Frontend logic
+│   └── css/app.css               Styles, themes
 │
 ├── tests/
 │   ├── fixtures/                  HTML fixtures for tests
@@ -188,6 +209,8 @@ kaz_nedviga/
 │   ├── test_parser_analyzer.py    Parser statistics
 │   ├── test_photo_enrichment.py   Photo enrichment, OLX/etagi coordinates
 │   ├── test_search_engine.py      Search params, district matching, point-in-polygon
+│   ├── test_features.py           Feature/tag extraction + CSV builder
+│   ├── test_ml_routes.py          /api/ml/train + /api/ml/status + scoring
 │   ├── test_settings.py           Settings, photo_cache_mb
 │   ├── test_export.py             Export TXT/PDF
 │   ├── test_favorites_api.py      Favorites API
@@ -208,7 +231,7 @@ kaz_nedviga/
 | `/` | GET | Main page (SPA) |
 | `/api/search` | POST | Search across sites (merged results + parser stats) |
 | `/api/districts` | GET | Almaty's 8 districts with coordinates and polygons |
-| `/api/ml/train` | POST | Retrain the price-evaluation neural net (background) |
+| `/api/ml/train` | POST | Retrain the price-quality model (background) |
 | `/api/ml/status` | GET | Training status + model metrics |
 
 ### Export
@@ -273,7 +296,7 @@ Each district has:
 | Anti-bot | randomized headers, sticky sessions, WAF fallback |
 | Photo cache | on-disk SHA1, WebP storage, LRU eviction, Pillow (WebP→JPEG) |
 | Export | fpdf2 (PDF with embedded photos), TXT |
-| Testing | pytest (536 tests) |
+| Testing | pytest (800 tests) |
 
 ## Architecture
 
@@ -296,7 +319,7 @@ Each district has:
 <!-- ===== English translation ends; original Russian below ===== -->
 # ДомАлматы — Поиск аренды жилья в Алматы
 
-Веб-приложение для поиска аренды квартир по 6 сайтам недвижимости Алматы с интерактивной картой, тепловой картой цен, избранным, мониторингом цен и экспортом в PDF/TXT.
+Веб-приложение для поиска аренды квартир по 6 сайтам недвижимости Алматы с интерактивной картой, ML-оценкой цены, избранным, мониторингом цен и экспортом в PDF/TXT.
 
 ## Возможности
 
@@ -361,6 +384,16 @@ Each district has:
 - **Цены на карточках и маркерах** во всех трёх валютах
 - **Цена за м²** на карточках
 
+### Оценка цены (ML)
+
+- **Извлечение признаков** (`features.py`): ~60 тэгов из заголовка/описания (рус/каз паттерны) — ремонт, мебель, техника, санузел, тип дома, год постройки, потолки, парковка/охрана/площадка, вид, «рядом метро/школа/парк», «срочно», «без комиссии», «от собственника» и др.; плюс вычисляемые поля (цена за м²/комнату, floor_ratio, первый/последний этаж, район по координатам, кол-во фото, статистика описания).
+- **Общий CSV** (`features_csv.py`): плоский `data/features.csv` из кэша результатов (`data/last_results.json`) и/или избранного (SQLite). Флаги: `--favorites`, `--only-favorites`, `--with-price-only`, `--min-price`, `--out`.
+- **Модель** (`ml/train_price_model.py`): по умолчанию **HistGradientBoosting** (победитель OOF-бенчмарка `ml/experiments.py` — стабильнее MLP на этом объёме данных; MLP доступен через `--model mlp`). Метка = цена (или цена/м²) в нижних 35% своей группы (quantile; `--labels median` — старое правило). Ценовые признаки исключены из модели во избежание утечки метки. Артефакты: `ml/price_model.pkl` + `ml/price_meta.json` с F1-оптимальным порогом.
+- **Инференс** (`ml/predict_price.py`): оценка CSV или одного JSON-объявления с вердиктами «хорошая цена / спорно / дорого».
+- **Бенчмарк** (`ml/experiments.py`): стратифицированная 5-fold OOF сверка меток/моделей/признаков — запускать при изменении пайплайна.
+- **Встроено в интерфейс**: на карточках цветной бейдж (зелёный «хорошая цена» / жёлтый «спорно» / красный «дорого» с вероятностью); **Настройки → «Оценка цены (нейросеть)»** — кнопка **«Обучить модель»**: пересобирает `data/features.csv` из кэша + избранного, обучает в фоновом потоке и показывает F1/AUC (API: `POST /api/ml/train`, `GET /api/ml/status`).
+- Зависимости: `scikit-learn` (основная модель) и опционально `torch` (для `--model mlp`): `pip install scikit-learn torch`.
+
 ### Интерфейс
 
 - **4 вкладки**:
@@ -419,7 +452,7 @@ run.bat
 python -m pytest tests/ -v
 ```
 
-**536 тестов**: парсеры (6 сайтов), модели, утилиты, фабрика, экспорт, API, районы, курсы валют, избранное, настройки, фото-обогащение, координаты.
+**800 тестов**: парсеры (6 сайтов), модели, утилиты, фабрика, экспорт, API, районы, курсы валют, избранное, настройки, фото-обогащение, координаты, извлечение признаков, ML-маршруты.
 
 ```bash
 # Быстрая проверка
@@ -434,9 +467,24 @@ python -m pytest tests/test_photo_enrichment.py -v --tb=short
 ```
 kaz_nedviga/
 ├── app.py                        # Flask-приложение (composition root), startup
+├── features.py                   # Извлечение признаков/тэгов из объявления
+├── features_csv.py               # Сборка общего data/features.csv (кэш + избранное)
 ├── export_utils.py               # Экспорт TXT/PDF, кэш фото на диске
 ├── rates.py                      # Курсы валют (KZT → RUB/USD/EUR)
 ├── db.py                         # SQLite слой (избранное, история цен)
+├── scheduler.py                  # Фоновый планировщик парсинга
+│
+├── webapp/
+│   ├── core.py                   # Общее состояние/хелперы (цель для monkeypatch)
+│   └── routes/                   # Блюпринты: search, settings, ml, favorites, proxy, rates, scheduler
+│
+├── ml/
+│   ├── train_price_model.py      # Обучение модели оценки цены (HistGB / MLP)
+│   ├── predict_price.py          # CLI-инференс по CSV / одному JSON-объявлению
+│   ├── scorer.py                 # Ленивая загрузка модели + батч-скоринг для веб-приложения
+│   ├── experiments.py            # 5-fold OOF бенчмарк меток/моделей/признаков
+│   ├── price_model.pkl           # Обученная HistGB-модель
+│   └── price_meta.json           # Статистики признаков, порог, метрики
 │
 ├── parsers/
 │   ├── __init__.py
@@ -449,19 +497,25 @@ kaz_nedviga/
 │   ├── etagi.py                  # etagi.com (+галерея из CDN, SVG state)
 │   └── telegram.py               # Telegram (4 канала, KZ→RU глоссарий)
 │
-├── data/
-│   ├── __init__.py
+├── geo/
 │   ├── districts.py              # 8 районов Алматы с полигонами
-│   ├── settings.json             # Тема, параметры, max_pages, photo_cache_mb
+│   └── buildings.py              # Обогащение по зданиям/гео
+│
+├── data/                         # рантайм-данные (в git не хранятся, кроме __init__)
 │   ├── last_results.json         # Кэш результатов поиска
+│   ├── features.csv              # Общий датасет признаков для ML
 │   ├── favorites.db              # SQLite (избранное + история цен)
-│   └── rates.json                # Кэш курсов валют
+│   └── settings.json             # Тема, параметры, max_pages, photo_cache_mb
 │
 ├── cache/
 │   └── photos/                   # Кэш картинок на диске (SHA1 от URL)
 │
 ├── templates/
 │   └── index.html                 # SPA: карта, результаты, избранное, настройки
+│
+├── static/
+│   ├── js/app.js                 # Логика фронтенда
+│   └── css/app.css               # Стили, темы
 │
 ├── tests/
 │   ├── fixtures/                  # HTML-фикстуры для тестов
@@ -472,6 +526,8 @@ kaz_nedviga/
 │   ├── test_parser_analyzer.py    # Статистика парсеров
 │   ├── test_photo_enrichment.py   # Обогащение фото, координаты OLX/etagi
 │   ├── test_search_engine.py      # Парметры поиска, районы, point-in-polygon
+│   ├── test_features.py           # Извлечение признаков + CSV
+│   ├── test_ml_routes.py          # /api/ml/train + /api/ml/status + скоринг
 │   ├── test_settings.py           # Настройки, photo_cache_mb
 │   ├── test_export.py             # Экспорт TXT/PDF
 │   ├── test_favorites_api.py      # API избранного
@@ -557,7 +613,7 @@ kaz_nedviga/
 | Антибот | рандомизированные заголовки, sticky sessions, WAF fallback |
 | Кэш фото | on-disk SHA1, хранение в WebP, LRU eviction, Pillow (WebP→JPEG) |
 | Экспорт | fpdf2 (PDF с встроенными фото), TXT |
-| Тестирование | pytest (536 тестов) |
+| Тестирование | pytest (800 тестов) |
 
 ## Архитектура
 
