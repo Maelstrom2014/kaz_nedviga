@@ -6,6 +6,7 @@ parse()-based fallback fails on them — every site that overrides
 extract_detail_price is covered here. A missing override silently marks
 active listings as unavailable ("цена не найдена на странице").
 """
+from parsers.kn import KnParser
 from parsers.olx import OlxParser
 from parsers.telegram import TelegramParser
 
@@ -102,6 +103,43 @@ class TestOlxDetailPrice:
         assert parser.is_unavailable(html) is True
         price, _, _ = parser.extract_detail_price(html, "https://www.olx.kz/d/obyavlenie/x/")
         assert price is None
+
+
+class TestKnUnavailable:
+
+    def test_404_page_is_unavailable(self):
+        # Точный текст kn.kz «пустой» страницы (склейка слов без пробелов).
+        parser = KnParser()
+        html = ('<html><body>Тут пусто'
+                '<h1>Ошибка 404</h1>'
+                '<p>Страницы либо не существует, либо она удалена.</p>'
+                '<p>Возможно, срок объявления уже истек.</p>'
+                '</body></html>')
+        assert parser.is_unavailable(html) is True
+        price, _, _ = parser.extract_detail_price(
+            html, "https://www.kn.kz/almaty/arenda-kvartir/12345/")
+        assert price is None
+
+    def test_404_partial_markers(self):
+        parser = KnParser()
+        for html in (
+            '<html><body><p>Страницы либо не существует, либо она удалена.</p></body></html>',
+            '<html><body><p>Возможно, срок объявления уже истек.</p></body></html>',
+        ):
+            assert parser.is_unavailable(html) is True, html
+
+    def test_live_page_is_available(self):
+        parser = KnParser()
+        html = ('<html><head><script type="application/ld+json">'
+                '{"@type":"Product","offers":{"price":180000,"priceCurrency":"KZT"}}'
+                '</script></head><body><div class="kn-fs-26">180 000 тг</div>'
+                '<h1>2-комнатная квартира</h1></body></html>')
+        assert parser.is_unavailable(html) is False
+
+    def test_404_with_whitespace_and_nbsp(self):
+        parser = KnParser()
+        html = ('<html><body>Тут&nbsp;пусто</body></html>')
+        assert parser.is_unavailable(html) is True
 
 class TestTelegramDetailPrice:
 

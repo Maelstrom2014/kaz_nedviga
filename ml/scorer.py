@@ -70,6 +70,7 @@ def model_info() -> dict:
         "available": bool(META_PATH.exists()
                           and (MODEL_PATH.exists() or HISTGB_PATH.exists())),
         "metrics": None, "n_rows": None, "trained_at": None,
+        "model_type": None, "label_rule": None, "threshold": None,
     }
     if info["available"]:
         try:
@@ -77,6 +78,9 @@ def model_info() -> dict:
             info["metrics"] = meta.get("metrics")
             info["n_rows"] = meta.get("n_rows")
             info["trained_at"] = META_PATH.stat().st_mtime
+            info["model_type"] = meta.get("model_type")
+            info["label_rule"] = meta.get("label_rule")
+            info["threshold"] = meta.get("threshold")
         except Exception:
             pass
     return info

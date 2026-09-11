@@ -298,6 +298,8 @@
                 <button class="btn-export" id="trainModelBtn" onclick="trainModel()">Обучить модель</button>
                 <span id="mlStatus" style="font-size:.8rem;color:var(--text-dim);">загрузка…</span>
               </div>
+              <div id="mlModelInfo" style="font-size:.78rem;color:var(--text-dim);margin-top:8px;max-width:720px;line-height:1.55;"></div>
+              <div id="mlMetrics" style="margin-top:10px;"></div>
 
               <h3 style="font-size:1rem;margin:28px 0 12px;">Управление данными</h3>
               <div style="display:flex;flex-wrap:wrap;gap:12px;">
@@ -322,9 +324,9 @@
                 <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 12px;">Сборщик обходит выбранные сайты и наполняет кэш объявлений. Фильтры (комнаты, цена, район и т.д.) применяются к собранным данным в реальном времени на вкладке «Поиск и карта», а сколько объявлений они скрыли — в сводке ниже.</p>
                 <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
                   <div class="form-group" style="margin:0;">
-                    <label>Страниц на каждый сайт (1–10)</label>
-                    <input type="number" id="maxPagesInput" name="max_pages" min="1" max="10" placeholder="по умолчанию" style="width:150px;">
-                    <small style="opacity:.65;display:block;margin-top:4px;">Пусто — стандартное число</small>
+                    <label>Страниц на каждый сайт (1–999)</label>
+                    <input type="number" id="maxPagesInput" name="max_pages" min="1" max="999" placeholder="по умолчанию" style="width:150px;">
+                    <small style="opacity:.65;display:block;margin-top:4px;">Пусто — стандартное число. Больше страниц = дольше поиск</small>
                   </div>
                   <button type="button" class="btn-search" id="crawlBtn" style="margin:0;">Поиск</button>
                 </div>

@@ -73,6 +73,9 @@ class ParserRunStats:
     phones_found: int = 0
     phones_missing: int = 0
     phone_reasons: dict = field(default_factory=dict)
+    # Live progress flags (updated during the run, not only at the end):
+    running: bool = False
+    current_page: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -89,6 +92,8 @@ class ParserRunStats:
             "phones_found": self.phones_found,
             "phones_missing": self.phones_missing,
             "phone_reasons": dict(self.phone_reasons),
+            "running": self.running,
+            "current_page": self.current_page,
         }
 
 
@@ -103,6 +108,16 @@ def get_all_parser_stats() -> list[dict]:
 
 def reset_parser_stats():
     _LAST_PARSER_STATS.clear()
+
+
+def publish_stats(stats: "ParserRunStats") -> None:
+    """Опубликовать промежуточный снимок статистики во время run().
+
+    Вызывается из run() до/после каждой страницы, чтобы вкладка
+    «Анализатор» (опрос /api/parser-status) видела прогресс по ходу
+    парсинга, а не только итог.
+    """
+    _LAST_PARSER_STATS[stats.name] = stats
 
 def _digits(value) -> str:
     # Accept str/int/float (embedded JSON states ship numbers as ints).
@@ -458,6 +473,8 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
         pages = 0
         log.info("[%s] === run start (max_pages=%d) ===", self.name,
                  params.max_pages or getattr(self, "max_pages", 3))
+        stats.running = True
+        _LAST_PARSER_STATS[self.name] = stats  # виден сразу при старте
         try:
             all_results: list[Listing] = []
             # pages per site: user override (params.max_pages) wins,
@@ -466,6 +483,8 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
             for page in range(1, max_pages + 1):
                 if page > 1 and self.page_delay:
                     time.sleep(random.uniform(*self.page_delay))
+                stats.current_page = page
+                _LAST_PARSER_STATS[self.name] = stats  # progress: page start
                 url = self.build_url(params, page=page)
                 log.debug("[%s] fetching page %d: %s", self.name, page, url)
                 t_fetch = time.monotonic()
@@ -479,6 +498,10 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
                     log.debug("[%s] page %d: parse returned 0 results, stopping", self.name, page)
                     break
                 all_results.extend(results)
+                stats.results_count = len(all_results)
+                stats.pages_fetched = pages
+                stats.duration_ms = (time.monotonic() - t0) * 1000
+                _LAST_PARSER_STATS[self.name] = stats  # progress: page done
                 log.info("[%s] page %d: %d listings", self.name, page, len(results))
                 if len(results) < self.min_page_size:
                     log.debug("[%s] page %d below min_page_size (%d<%d), last page",
@@ -498,6 +521,7 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
             stats.status = "ok" if filtered else "empty"
             stats.duration_ms = (time.monotonic() - t0) * 1000
             self._collect_phone_stats(filtered, stats)
+            stats.running = False
             _LAST_PARSER_STATS[self.name] = stats
             log.info("[%s] === run done: %d results, %d pages, %.0fms, "
                      "phones %d/%d ===",
@@ -511,6 +535,7 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
             stats.error_type = type(exc).__name__
             stats.pages_fetched = pages
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             if all_results:
                 # Blocked mid-pagination: keep the pages we already got
                 # instead of throwing them away.
@@ -537,6 +562,7 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
             stats.error_type = type(exc).__name__
             stats.pages_fetched = pages
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             log.warning("[%s] SSL error: %s", self.name, str(exc)[:200])
             _LAST_PARSER_STATS[self.name] = stats
             return []
@@ -546,6 +572,7 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
             stats.error_type = type(exc).__name__
             stats.pages_fetched = pages
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             log.warning("[%s] Connection error: %s", self.name, str(exc)[:200])
             _LAST_PARSER_STATS[self.name] = stats
             return []
@@ -555,6 +582,7 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
             stats.error_type = "Timeout"
             stats.pages_fetched = pages
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             log.warning("[%s] Timeout after %ds", self.name, self.timeout)
             _LAST_PARSER_STATS[self.name] = stats
             return []
@@ -564,6 +592,7 @@ class BaseParser(HttpMixin, PhotosMixin, PhonesMixin):
             stats.error_type = type(exc).__name__
             stats.pages_fetched = pages
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             log.warning("[%s] unexpected error: %s", self.name, exc, exc_info=True)
             _LAST_PARSER_STATS[self.name] = stats
             return []

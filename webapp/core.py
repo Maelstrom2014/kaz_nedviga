@@ -104,9 +104,9 @@ _SEARCH_DEFAULTS_KEYS = {
     "floor_min", "floor_max", "area_min", "area_max",
 }
 
-# Sane bounds for per-parser page counts (the form clamps to this range).
+# Bounds for per-parser page counts (the form clamps to this range).
 _MAX_PAGES_MIN = 1
-_MAX_PAGES_MAX = 30
+_MAX_PAGES_MAX = 999
 
 # Sane bounds for the photo cache size (MB).
 _PHOTO_CACHE_MB_MIN = 50
@@ -230,11 +230,11 @@ def _parse_params(args) -> SearchParams:
     limit_raw = _int(args.get("limit"))
     limit = limit_raw if limit_raw is not None else 20
 
-    # Pages per site: 0/missing = site default, clamp to a sane 1..10
+    # Pages per site: 0/missing = site default, clamp to 1..999
     max_pages_raw = _int(args.get("max_pages"))
     max_pages = 0
     if max_pages_raw is not None and max_pages_raw > 0:
-        max_pages = min(max_pages_raw, 10)
+        max_pages = min(max_pages_raw, _MAX_PAGES_MAX)
 
     return SearchParams(
         query=_str(args.get("query", "")),

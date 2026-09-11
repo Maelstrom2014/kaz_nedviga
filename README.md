@@ -88,7 +88,7 @@ A web app for searching apartment rentals across 6 Almaty real-estate sites, wit
   - **Settings** — defaults, exchange rates, image cache, theme, data management
 - **6 color themes**: Midnight, Carbon, Forest (dark) + Daylight, Sand, Rose (light).
 - **Default search parameters** (stored on the server).
-- **Pages per site**: per-parser max_pages setting (1–30).
+- **Pages per site**: per-parser max_pages setting (1–999).
 - **Parser analyzer**: status, time, result count, errors for each parser + how many listings were hidden by filters.
 - **Results export** to TXT and PDF (portrait + landscape) with all photos.
 - **Photo carousel** on the listing cards.
@@ -407,7 +407,7 @@ Each district has:
   - **Настройки** — параметры по умолчанию, курс валют, кэш картинок, тема, управление данными
 - **6 цветовых тем**: Полночь, Карбон, Лес (тёмные) + Дневной, Песок, Роза (светлые)
 - **Параметры поиска по умолчанию** (сохраняются на сервере)
-- **Страницы по сайтам**: per-parser настройка max_pages (1–30)
+- **Страницы по сайтам**: per-parser настройка max_pages (1–999)
 - **Анализатор парсеров**: статус, время, количество результатов, ошибки по каждому парсеру, число объявлений, скрытых фильтрами
 - **Выгрузка результатов** в TXT и PDF (портретный + ландшафтный) с всеми фото
 - **Карусель фотографий** на карточках объявлений

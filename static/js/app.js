@@ -62,27 +62,56 @@
       });
     }
 
+    // Позиции маркеров (вычисляются в drawListingMarkers тем же geocodeListing,
+    // что и отрисовка) — счётчик районов обязан совпадать с видимой картиной.
+    let markerPositions = [];
+
+    function pointInPolygon(lat, lon, poly) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const yi = poly[i][0], xi = poly[i][1];
+        const yj = poly[j][0], xj = poly[j][1];
+        if (((yi > lat) !== (yj > lat)) &&
+            (lon < (xj - xi) * (lat - yi) / (yj - yi) + xi)) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    }
+
     function countListingsInDistrict(districtName) {
       if (!displayedResults || !districtName) return 0;
-      // Приоритет: район по координатам (district_name); для строк без
-      // координат — текстовый fallback по адресу/заголовку. Word boundaries
-      // нужны, чтобы "ул. Ауэзова" не совпала с "Ауэзовский".
+      const dist = districtsData.find(d => d.name === districtName);
+      // Порядок определения (как у маркеров):
+      // 1) district_name от сервера (координаты + point-in-polygon на сервере)
+      // 2) название района в адресе/заголовке (word boundaries, чтобы
+      //    "ул. Ауэзова" не совпала с "Ауэзовский")
+      // 3) фактическая позиция маркера (для объявлений без адреса маркер
+      //    рисуется у центра города — считаем его там, где он нарисован)
       const escaped = districtName.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const re = new RegExp('\\b' + escaped + '\\b');
-      return displayedResults.filter(r => {
-        if (r.district_name) return r.district_name === districtName;
+      let n = 0;
+      displayedResults.forEach((r, i) => {
+        if (r.district_name) {
+          if (r.district_name === districtName) n++;
+          return;
+        }
         const hay = ((r.address || '') + ' ' + (r.title || '')).toLowerCase();
-        return re.test(hay);
-      }).length;
+        if (re.test(hay)) { n++; return; }
+        const pos = markerPositions[i];
+        if (dist && pos && pointInPolygon(pos[0], pos[1], dist.polygon)) n++;
+      });
+      return n;
     }
 
     function drawListingMarkers() {
       if (listingMarkers) { map.removeLayer(listingMarkers); listingMarkers = null; }
       listingMarkerRefs = [];
+      markerPositions = displayedResults.map((r, i) => geocodeListing(r, i));
       if (!displayedResults || !displayedResults.length) return;
       listingMarkers = L.layerGroup();
       displayedResults.forEach((r, i) => {
-        const coords = geocodeListing(r, i);
+        const coords = markerPositions[i];
         if (!coords) return;
         const priceStr = r.price ? r.price.toLocaleString('ru-RU') + ' ₸' : '—';
         const photo = r.photo ? r.photo.split('|')[0] : '';
@@ -384,6 +413,11 @@
       const btn = document.getElementById('crawlBtn');
       btn.disabled = true; btn.textContent = 'Идёт поиск...';
       document.getElementById('loading').classList.add('active');
+      // Живая статистика: опрашиваем /api/parser-status, пока идёт парсинг
+      if (crawlProgressTimer) clearInterval(crawlProgressTimer);
+      crawlProgressTimer = setInterval(() => {
+        loadParserStats(true).catch(() => {});
+      }, 2000);
       try {
         const params = getCrawlParams();
         const resp = await fetch('/api/search', {
@@ -409,6 +443,7 @@
       } finally {
         btn.disabled = false; btn.textContent = 'Поиск';
         document.getElementById('loading').classList.remove('active');
+        if (crawlProgressTimer) { clearInterval(crawlProgressTimer); crawlProgressTimer = null; }
       }
     }
 
@@ -678,6 +713,7 @@ function renderResults(results, total) {
 
     // === Parser Analyzer ===
     let lastParserStats = [];
+    let crawlProgressTimer = null;  // живой опрос статистики во время парсинга
 
     const STATUS_LABELS = {
       ok: 'OK', empty: 'Пусто', http_error: 'HTTP ошибка',
@@ -686,14 +722,14 @@ function renderResults(results, total) {
     };
     const ERROR_STATUSES = new Set(['http_error','ssl_error','connection_error','timeout','error']);
 
-    async function loadParserStats() {
+    async function loadParserStats(quiet) {
       try {
         const resp = await fetch('/api/parser-status');
         const data = await resp.json();
         lastParserStats = data.parsers || [];
         renderParserStats(lastParserStats);
       } catch (err) {
-        console.error('loadParserStats:', err);
+        if (!quiet) console.error('loadParserStats:', err);
       }
     }
 
@@ -725,7 +761,9 @@ function renderResults(results, total) {
       `;
       grid.innerHTML = stats.map(s => {
         const isErr = ERROR_STATUSES.has(s.status);
-        const label = STATUS_LABELS[s.status] || s.status;
+        const isRunning = s.running;
+        const label = isRunning ? `стр. ${s.current_page || '…'}…`
+          : (STATUS_LABELS[s.status] || s.status);
         const durStr = s.duration_ms ? (s.duration_ms >= 1000 ? (s.duration_ms/1000).toFixed(1)+'с' : Math.round(s.duration_ms)+'мс') : '—';
         const ts = s.timestamp ? s.timestamp.slice(11) : '';
         return `
@@ -735,7 +773,7 @@ function renderResults(results, total) {
                 <div class="parser-name">${escapeHtml(s.name)}</div>
                 <div class="parser-url">${escapeHtml(s.base_url)}</div>
               </div>
-              <span class="status-badge ${isErr ? 'error' : s.status === 'ok' ? 'ok' : 'empty'}">${label}</span>
+              <span class="status-badge ${isRunning ? 'running' : isErr ? 'error' : s.status === 'ok' ? 'ok' : 'empty'}">${escapeHtml(label)}</span>
             </div>
             <div class="parser-metrics">
               <span class="parser-metric">Результатов: <b>${s.results_count}</b></span>
@@ -998,7 +1036,7 @@ function renderResults(results, total) {
         div.innerHTML = `
           <label>${name}</label>
           <div style="display:flex;align-items:center;gap:6px;">
-            <input type="number" min="1" max="30" value="${val}" id="pmp-${name}"
+            <input type="number" min="1" max="999" value="${val}" id="pmp-${name}"
                    onchange="setParserMaxPages('${name}', this.value)" style="width:70px;">
             <span style="font-size:.75rem;color:var(--text-dim);">стр.</span>
           </div>`;
@@ -1008,8 +1046,8 @@ function renderResults(results, total) {
 
     async function setParserMaxPages(name, val) {
       const n = parseInt(val, 10);
-      if (isNaN(n) || n < 1 || n > 30) {
-        alert('Введите число от 1 до 30');
+      if (isNaN(n) || n < 1 || n > 999) {
+        alert('Введите число от 1 до 999');
         loadParserMaxPages();
         return;
       }
@@ -1128,20 +1166,87 @@ function renderResults(results, total) {
     // --- Оценка цены (нейросеть): обучение и статус ---
     let mlPollTimer = null;
 
+    function mlModelDescription(model) {
+      const type = (model && model.model_type) || 'sklearn_histgb';
+      const name = type === 'sklearn_histgb'
+        ? 'HistGradientBoosting — градиентный бустинг над деревьями'
+        : 'PyTorch MLP — полносвязная нейросеть';
+      const rule = (model && model.label_rule)
+        || 'цена (или цена/м²) в нижних 35% своей группы похожих';
+      return `<b>Модель:</b> ${name}. ` +
+        `<b>Что считает «хорошей ценой»:</b> ${rule} (комнаты × корзина площади; без площади — цена в своей группе). ` +
+        `Цена в признаки <b>не включена</b> — иначе модель просто переучивала бы правило разметки. ` +
+        `Сигналы: тэги описания (ремонт, мебель, техника), этаж, источник, район, фото. ` +
+        `Метрики считаются на отложенных 20% объявлений, которых модель не видела при обучении.`;
+    }
+
+    function mlQualityVerdict(auc) {
+      if (!auc || auc <= 0.5) return {text: 'слабое — близко к случайному угадыванию, нужно больше данных', cls: 'var(--danger)'};
+      if (auc < 0.6) return {text: 'приемлемое — вырастет с ростом базы объявлений', cls: 'var(--warning)'};
+      if (auc >= 0.75) return {text: 'хорошее — сигнал надёжен', cls: 'var(--success)'};
+      return {text: 'неплохое — заметно лучше случайного', cls: 'var(--success)'};
+    }
+
+    function mlMetricsHtml(model, running) {
+      const el = document.getElementById('mlMetrics');
+      if (!el) return;
+      if (running) {
+        el.innerHTML = '<div style="font-size:.78rem;color:var(--text-dim);">Метрики появятся после завершения обучения…</div>';
+        return;
+      }
+      const m = model && model.metrics;
+      if (!m) {
+        el.innerHTML = '<div style="font-size:.78rem;color:var(--text-dim);">Модель ещё не обучена — нажмите «Обучить модель».</div>';
+        return;
+      }
+      const items = [
+        ['Accuracy', m.accuracy, 'доля верных ответов'],
+        ['Precision', m.precision, 'точность: из помеченных «хорошая цена» столько действительно дешевле похожих'],
+        ['Recall', m.recall, 'полнота: столько реальных дешёвых нашла модель'],
+        ['F1', m.f1, 'баланс точности и полноты'],
+        ['AUC', m.auc, 'качество ранжирования: насколько верно упорядочивает от выгодных к дорогим'],
+      ];
+      const thr = (model.threshold != null) ? model.threshold
+        : (m.threshold != null ? m.threshold : null);
+      if (thr != null) items.push(['Порог', thr, 'вероятность, выше которой карточка помечается «хорошая цена»']);
+      const verdict = mlQualityVerdict(m.auc);
+      el.innerHTML =
+        '<div style="font-size:.78rem;color:var(--text-dim);margin-bottom:6px;">Метрики качества обучения (на отложенных 20% объявлений):</div>' +
+        '<div style="display:flex;gap:10px;flex-wrap:wrap;max-width:860px;">' +
+        items.map(([label, val, hint]) =>
+          `<div class="analyzer-summary-card" title="${escapeHtml(hint)}" style="min-width:120px;">` +
+          `<div class="num">${val != null ? (+val).toFixed(2) : '—'}</div>` +
+          `<div class="label">${label}</div></div>`).join('') +
+        '</div>' +
+        `<div style="font-size:.78rem;margin-top:8px;max-width:720px;line-height:1.5;color:var(--text-dim);">` +
+        `Оценка качества: <b style="color:${verdict.cls};">${verdict.text}</b>. ` +
+        `Бейджи на карточках — подсказка для сортировки, а не гарантия: смотрите AUC (ранжирование) прежде F1.` +
+        `</div>`;
+    }
+
     function mlStatusText(st) {
       if (st.status === 'running') return 'Обучение…';
       if (st.status === 'error') return 'Ошибка: ' + (st.error || 'неизвестно');
       const m = st.model || {};
       if (st.status === 'done' && st.metrics) {
-        const f1 = (st.metrics.f1 || 0).toFixed(2);
         const auc = (st.metrics.auc || 0).toFixed(2);
-        return `Модель обучена (${st.n_rows || '?'} объявл.) · F1 ${f1}, AUC ${auc}`;
+        return `Модель обучена (${st.n_rows || '?'} объявл.) · AUC ${auc}`;
       }
       if (m.available && m.metrics) {
-        return `Модель готова (${m.n_rows || '?'} объявл.) · F1 ${(m.metrics.f1 || 0).toFixed(2)}, AUC ${(m.metrics.auc || 0).toFixed(2)}`;
+        return `Модель готова (${m.n_rows || '?'} объявл.) · AUC ${(m.metrics.auc || 0).toFixed(2)}`;
       }
       if (m.available) return 'Модель готова';
       return 'Модель не обучена';
+    }
+
+    function renderMlDetails(st) {
+      const infoEl = document.getElementById('mlModelInfo');
+      if (infoEl && st.model && st.model.available) {
+        infoEl.innerHTML = mlModelDescription(st.model);
+      } else if (infoEl) {
+        infoEl.innerHTML = mlModelDescription(null);
+      }
+      mlMetricsHtml(st.model, st.status === 'running');
     }
 
     async function loadMlStatus() {
@@ -1151,6 +1256,7 @@ function renderResults(results, total) {
         const resp = await fetch('/api/ml/status');
         const st = await resp.json();
         el.textContent = mlStatusText(st);
+        renderMlDetails(st);
         const btn = document.getElementById('trainModelBtn');
         if (btn) btn.disabled = st.status === 'running';
         if (st.status === 'running') {

@@ -366,11 +366,17 @@ class TestParserMaxPages:
 
     def test_clamps_out_of_range(self, client):
         resp = client.post("/api/settings", json={
-            "parser_max_pages": {"krisha.kz": 999, "olx.kz": 0}})
+            "parser_max_pages": {"krisha.kz": 5000, "olx.kz": 0}})
         pmp = resp.get_json()["parser_max_pages"]
-        # 999 → clamped to keep previous valid value (9 default)
+        # 5000 → clamped to the valid max (999); 0 → keep default
         assert pmp["krisha.kz"] == 9
         assert pmp["olx.kz"] == 6
+
+    def test_accepts_new_max_999(self, client):
+        resp = client.post("/api/settings", json={
+            "parser_max_pages": {"krisha.kz": 999}})
+        pmp = resp.get_json()["parser_max_pages"]
+        assert pmp["krisha.kz"] == 999
 
     def test_rejects_non_object(self, client):
         resp = client.post("/api/settings", json={"parser_max_pages": "bad"})

@@ -928,9 +928,13 @@ class TelegramParser(BaseParser):
         t0 = time.monotonic()
         pages = 0
         all_results: list[Listing] = []
+        stats.running = True
+        _LAST_PARSER_STATS[self.name] = stats  # виден сразу при старте
         try:
             for ch in _TIERED_CHANNELS:
                 try:
+                    stats.current_page = pages + 1
+                    _LAST_PARSER_STATS[self.name] = stats  # progress: channel start
                     base = f"{self.base_url}/s/{ch.name}"
                     html = self.fetch(base)
                     pages += 1
@@ -966,6 +970,7 @@ class TelegramParser(BaseParser):
             stats.results_count = len(filtered)
             stats.status = "ok" if filtered else "empty"
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             _LAST_PARSER_STATS[self.name] = stats
             return filtered
         except Exception as exc:
@@ -974,6 +979,7 @@ class TelegramParser(BaseParser):
             stats.error_type = type(exc).__name__
             stats.pages_fetched = pages
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             log.warning("[%s] unexpected error: %s", self.name, exc, exc_info=True)
             _LAST_PARSER_STATS[self.name] = stats
             # Keep whatever we gathered before the failure.

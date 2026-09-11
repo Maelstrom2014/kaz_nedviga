@@ -994,11 +994,15 @@ class TwoGisParser(BaseParser):
         try:
             page_size = 20
             max_pages = params.max_pages or getattr(self, "max_pages", 3)
+            stats.running = True
+            _LAST_PARSER_STATS[self.name] = stats  # виден сразу при старте
             for page in range(1, max_pages + 1):
                 if page > 1:
                     break  # SPA shell only serves page 1
                 if self.page_delay and page > 1:
                     time.sleep(random.uniform(*self.page_delay))
+                stats.current_page = page
+                _LAST_PARSER_STATS[self.name] = stats  # progress: page start
                 url = self._build_realty_html_url(params, page)
                 log.debug("[%s] realty fetch page %d: %s", self.name, page, url)
                 body = self.fetch(url)
@@ -1018,6 +1022,7 @@ class TwoGisParser(BaseParser):
             stats.results_count = len(filtered)
             stats.status = "ok" if filtered else "empty"
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             _LAST_PARSER_STATS[self.name] = stats
             return filtered
         except Exception as exc:
@@ -1025,6 +1030,7 @@ class TwoGisParser(BaseParser):
             stats.error = str(exc)[:300]
             stats.error_type = type(exc).__name__
             stats.duration_ms = (time.monotonic() - t0) * 1000
+            stats.running = False
             log.warning("[%s] realty run error: %s", self.name, exc, exc_info=True)
             _LAST_PARSER_STATS[self.name] = stats
             try:

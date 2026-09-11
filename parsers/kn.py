@@ -23,6 +23,20 @@ class KnParser(BaseParser):
     # +7 700 087 78 77). It must never surface as the advertiser's phone.
     phone_blacklist = frozenset({"+77000877877"})
 
+    # Markers of kn.kz "not found / removed" page ("Тут пустоОшибка 404
+    # Страницы либо не существует, либо она удалена.Возможно, срок
+    # объявления уже истек."). Served with HTTP 200, so a substring check
+    # is the only way to spot it.
+    unavailable_markers = ("тут пусто", "ошибка 404",
+                           "страницы либо не существует",
+                           "срок объявления уже истек")
+
+    def is_unavailable(self, html: str) -> bool:
+        text = (html or "").lower()
+        text = text.replace("\u00a0", " ").replace("&nbsp;", " ")
+        text = " ".join(text.split())
+        return any(m in text for m in self.unavailable_markers)
+
     def _build_url_base(self, params: SearchParams) -> str:
         parts: list[str] = []
         if params.rooms:

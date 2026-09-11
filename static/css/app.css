@@ -399,6 +399,11 @@
 }
   .analyzer-summary-card .num { font-size: 1.4rem; font-weight: 800; }
   .analyzer-summary-card .label { font-size: .72rem; color: var(--text-dim); }
+  .status-badge.running {
+    background: var(--accent); color: #fff;
+    animation: pulse-opacity 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse-opacity { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
   .price-per-m2 { font-size: .7rem; color: var(--accent-2); font-weight: 600; }
   .price-conv { font-size: .8rem; color: var(--text-dim); font-weight: 600; }
   .desc-preview { font-size: .75rem; color: var(--text-dim); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

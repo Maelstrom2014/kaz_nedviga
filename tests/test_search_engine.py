@@ -103,8 +103,9 @@ class TestParseParamsJsonDict:
         params = _parse_params({"max_pages": "4"})
         assert params.max_pages == 4
 
-    def test_max_pages_clamped_to_10(self):
-        assert _parse_params({"max_pages": "99"}).max_pages == 10
+    def test_max_pages_clamped_to_999(self):
+        assert _parse_params({"max_pages": "500"}).max_pages == 500
+        assert _parse_params({"max_pages": "5000"}).max_pages == 999
 
     def test_max_pages_invalid(self):
         assert _parse_params({"max_pages": "abc"}).max_pages == 0
