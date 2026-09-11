@@ -1,11 +1,12 @@
 """Run all scheduler tests with log suppression; print exit code."""
 import subprocess
 import sys
+from pathlib import Path
 
 r = subprocess.run(
     [sys.executable, "-m", "pytest", "tests/test_scheduler.py",
      "--tb=line", "-q", "--log-cli-level=ERROR", "--log-level=ERROR"],
-    cwd=r"E:\python_scripts\2026\kaz_nedviga",
+    cwd=str(Path(__file__).resolve().parent),
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     text=True, errors="replace", timeout=180,
 )

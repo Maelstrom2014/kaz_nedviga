@@ -25,10 +25,14 @@ def api_get_settings():
     data = core.load_settings()
     # Normalize so clients always see every known key
     data.setdefault("hide_no_photo", False)
+    data.setdefault("crawl_sources", core._DEFAULT_SETTINGS["crawl_sources"])
+    data.setdefault("results_columns", core._DEFAULT_SETTINGS["results_columns"])
+    data.setdefault("card_width_scale", core._DEFAULT_SETTINGS["card_width_scale"])
     data.setdefault("photo_cache_mb", core._DEFAULT_SETTINGS["photo_cache_mb"])
     data.setdefault("scheduler_enabled", False)
     data.setdefault("parser_interval_hours",
                     core._DEFAULT_SETTINGS["parser_interval_hours"])
+    data.setdefault("bot_enabled", False)
     data.setdefault("proxy", DEFAULT_PROXY_SETTINGS)
     core.get_proxy_pool().configure(data.get("proxy"))
     return jsonify(data)
@@ -45,6 +49,27 @@ def api_set_settings():
         data["theme"] = theme
     if "hide_no_photo" in args:
         data["hide_no_photo"] = bool(args["hide_no_photo"])
+    if "crawl_sources" in args:
+        cs = args.get("crawl_sources")
+        if not isinstance(cs, list):
+            return jsonify({"error": "crawl_sources must be a list"}), 400
+        known = {s["name"] for s in core.list_sites()}
+        # Unknown/renamed sites are dropped; empty list = all sites.
+        data["crawl_sources"] = [str(x) for x in cs if str(x) in known]
+    if "results_columns" in args:
+        try:
+            rc = int(args["results_columns"])
+        except (TypeError, ValueError):
+            rc = core._DEFAULT_SETTINGS["results_columns"]
+        data["results_columns"] = max(core._RESULTS_COLUMNS_MIN,
+                                      min(core._RESULTS_COLUMNS_MAX, rc))
+    if "card_width_scale" in args:
+        try:
+            cws = int(args["card_width_scale"])
+        except (TypeError, ValueError):
+            cws = core._DEFAULT_SETTINGS["card_width_scale"]
+        data["card_width_scale"] = max(core._CARD_WIDTH_SCALE_MIN,
+                                       min(core._CARD_WIDTH_SCALE_MAX, cws))
     if "olx_phone_page_only" in args:
         data["olx_phone_page_only"] = bool(args["olx_phone_page_only"])
     if "olx_phone_playwright" in args:
@@ -58,6 +83,8 @@ def api_set_settings():
                                      min(core._PHOTO_CACHE_MB_MAX, pcm))
     if "scheduler_enabled" in args:
         data["scheduler_enabled"] = bool(args["scheduler_enabled"])
+    if "bot_enabled" in args:
+        data["bot_enabled"] = bool(args["bot_enabled"])
     if "parser_interval_hours" in args:
         try:
             pih = int(args["parser_interval_hours"])
@@ -93,12 +120,26 @@ def api_set_settings():
         )
     except Exception as exc:
         core.log.warning("[settings] scheduler reconfigure failed: %s", exc)
+    # Apply the telegram-bot toggle to the running bot thread immediately.
+    try:
+        import telegram_bot
+        telegram_bot.configure(data.get("bot_enabled", False))
+    except Exception as exc:
+        core.log.warning("[settings] bot reconfigure failed: %s", exc)
     return jsonify({"ok": True,
                     "theme": data.get("theme", core._DEFAULT_THEME),
                     "hide_no_photo": bool(data.get("hide_no_photo", False)),
+                    "crawl_sources": data.get("crawl_sources", []),
+                    "results_columns": data.get(
+                        "results_columns",
+                        core._DEFAULT_SETTINGS["results_columns"]),
+                    "card_width_scale": data.get(
+                        "card_width_scale",
+                        core._DEFAULT_SETTINGS["card_width_scale"]),
                     "photo_cache_mb": data.get("photo_cache_mb",
                                                core._DEFAULT_SETTINGS["photo_cache_mb"]),
                     "scheduler_enabled": bool(data.get("scheduler_enabled", False)),
+                    "bot_enabled": bool(data.get("bot_enabled", False)),
                     "parser_interval_hours": data.get(
                         "parser_interval_hours",
                         core._DEFAULT_SETTINGS["parser_interval_hours"]),

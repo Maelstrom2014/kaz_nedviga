@@ -142,6 +142,8 @@ class TestParserIntegration:
                           source="olx.kz")
         html = ('<div data-testid="ad-price">120 000 ₸</div>'
                 '<a href="tel:77051234567">показать номер</a>')
+        # olx uses the cffi fetch path (use_cffi=True) -> fetch_detail
+        # dispatches to self.fetch, not fetch_session.
         with patch.object(parser, "fetch", return_value=html):
             parser._fetch_detail_photos(listing)
         assert listing.phone == "+77051234567"
@@ -170,14 +172,16 @@ class TestParserIntegration:
         listing = Listing(url="https://krisha.kz/a/show/1", source="krisha.kz",
                           phone="+77000000000")
         html = '<span data-tel="8 771 234 56 78"></span>'
-        with patch.object(parser, "fetch", return_value=html):
+        with patch.object(parser, "fetch_session",
+                          return_value=(MagicMock(), html)):
             parser._fetch_detail_photos(listing)
         assert listing.phone == "+77000000000"
 
     def test_fetch_error_leaves_phone_empty(self):
         parser = KrishaParser()
         listing = Listing(url="https://krisha.kz/a/show/1", source="krisha.kz")
-        with patch.object(parser, "fetch", side_effect=Exception("blocked")):
+        with patch.object(parser, "fetch_session",
+                          side_effect=Exception("blocked")):
             parser._fetch_detail_photos(listing)
         assert listing.phone == ""
 

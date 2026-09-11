@@ -167,7 +167,9 @@ class KrishaParser(BaseParser):
     def _fetch_detail_photos(self, listing: Listing) -> list[str]:
         """Fetch the krisha listing detail page and extract all gallery photos."""
         try:
-            session, html = self.fetch_session(listing.url)
+            # Cached detail fetch: (None, html) on cache hit — _enrich_phone
+            # then falls back to an ephemeral session for the reveal XHR.
+            session, html = self.fetch_detail(listing.url)
             soup = self.parse_html(html)
         except Exception:
             return []

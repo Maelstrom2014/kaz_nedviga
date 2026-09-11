@@ -588,7 +588,10 @@ class OlxParser(BaseParser):
         a safety net.
         """
         try:
-            html = self.fetch(listing.url)
+            # Cached detail fetch — repeat fetches within TTL are free.
+            # olx fetches via the requests path, so a live fetch also
+            # returns the session for phone-reveal XHRs.
+            session, html = self.fetch_detail(listing.url)
         except Exception as exc:
             log.debug("[%s] detail fetch failed for %s: %s",
                       self.name, listing.url[:60], exc)
@@ -608,7 +611,7 @@ class OlxParser(BaseParser):
         if self.phone_playwright_enabled and not listing.phone:
             self._resolve_phone(listing, html)
         else:
-            self._enrich_phone(listing, html, session=self._cffi_session)
+            self._enrich_phone(listing, html, session=session)
 
         soup = self.parse_html(html)
         photos: list[str] = []

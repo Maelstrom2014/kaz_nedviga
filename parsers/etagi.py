@@ -337,7 +337,9 @@ class EtagiParser(BaseParser):
         ``/content/`` URLs, and dedup by the photo hash.
         """
         try:
-            html = self.fetch(listing.url)
+            # Cached detail fetch (TTL disk cache) — same fetch stack
+            # (cffi + WAF handling), repeat fetches within TTL are free.
+            html = self.fetch_detail_html(listing.url)
         except Exception:
             return []
 

@@ -337,3 +337,19 @@ class TestInitDB:
         assert len(list_favorites()) == 1
         reset_db()
         assert len(list_favorites()) == 0
+
+    def test_reset_db_preserves_bot_users(self):
+        """A DB reset must not wipe bot accounts: the first /start after a
+        wipe would otherwise be (re-)promoted to admin — or a random user
+        could claim the admin role by starting first."""
+        from db import get_bot_user, is_bot_admin, register_bot_user
+
+        register_bot_user(111, username="a", first_name="A")  # first -> admin
+        register_bot_user(222, username="b", first_name="B")  # second -> user
+        add_favorite(SAMPLE_FAVORITE)
+
+        reset_db()
+
+        assert is_bot_admin(111) is True
+        assert get_bot_user(222)["role"] == "user"
+        assert len(list_favorites()) == 0  # listing data still wiped

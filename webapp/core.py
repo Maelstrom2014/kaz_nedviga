@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
@@ -64,7 +65,7 @@ log = logging.getLogger("app")
 SETTINGS_PATH = Path(__file__).parent.parent / "data" / "settings.json"
 THEMES = [
     "midnight", "carbon", "forest",            # dark
-    "daylight", "sand", "rose",                # light
+    "daylight", "sand", "slate",               # light
 ]
 _DEFAULT_THEME = "midnight"
 _DEFAULT_SEARCH_DEFAULTS = {
@@ -80,13 +81,23 @@ _DEFAULT_SEARCH_DEFAULTS = {
 _DEFAULT_SETTINGS = {"theme": _DEFAULT_THEME,
                      "hide_no_photo": False,
                      "search_defaults": _DEFAULT_SEARCH_DEFAULTS,
+                      # Result cards: number of grid columns and card width
+                      # scale in % of the column (100 = normal).
+                      "results_columns": 2,
+                      "card_width_scale": 100,
+                      # Crawl sources: checked site names in «Запуск парсинга».
+                      # Empty list = all sites (default).
+                      "crawl_sources": [],
                       "photo_cache_mb": 500,
                       "olx_phone_page_only": False,
                       "olx_phone_playwright": False,
-                     # Background scheduler: refresh cached listings every N hours.
-                     # Off by default — explicit opt-in (parser.network load).
-                     "scheduler_enabled": False,
-                     "parser_interval_hours": 4,
+                      # Background scheduler: refresh cached listings every N hours.
+                      # Off by default — explicit opt-in (parser.network load).
+                      "scheduler_enabled": False,
+                      "parser_interval_hours": 4,
+                      # Telegram bot (@kaz_home_nedviga_bot) embedded in the
+                      # web server. Off by default — needs bot_token.txt.
+                      "bot_enabled": False,
                      "parser_max_pages": {
                          "krisha.kz": 9,
                          "olx.kz": 6,
@@ -115,6 +126,12 @@ _PHOTO_CACHE_MB_MAX = 10000
 # Sane bounds for the background scheduler interval (hours).
 _SCHEDULER_INTERVAL_MIN = 1
 _SCHEDULER_INTERVAL_MAX = 168
+
+# Result cards layout: grid columns (1–4) and width scale in % (50–150).
+_RESULTS_COLUMNS_MIN = 1
+_RESULTS_COLUMNS_MAX = 4
+_CARD_WIDTH_SCALE_MIN = 50
+_CARD_WIDTH_SCALE_MAX = 150
 
 
 def load_settings() -> dict:
@@ -148,6 +165,17 @@ def load_settings() -> dict:
     pcm = data.get("photo_cache_mb")
     if not isinstance(pcm, int) or not _PHOTO_CACHE_MB_MIN <= pcm <= _PHOTO_CACHE_MB_MAX:
         data["photo_cache_mb"] = _DEFAULT_SETTINGS["photo_cache_mb"]
+    # Backfill result-card layout prefs (columns, width scale).
+    rc = data.get("results_columns")
+    if not isinstance(rc, int) or not _RESULTS_COLUMNS_MIN <= rc <= _RESULTS_COLUMNS_MAX:
+        data["results_columns"] = _DEFAULT_SETTINGS["results_columns"]
+    cws = data.get("card_width_scale")
+    if not isinstance(cws, int) or not _CARD_WIDTH_SCALE_MIN <= cws <= _CARD_WIDTH_SCALE_MAX:
+        data["card_width_scale"] = _DEFAULT_SETTINGS["card_width_scale"]
+    # Backfill crawl sources (list of site names; empty = all sites).
+    cs = data.get("crawl_sources")
+    if not isinstance(cs, list) or not all(isinstance(x, str) for x in cs):
+        data["crawl_sources"] = []
     # Backfill scheduler settings: scheduler_enabled (bool), parser_interval_hours.
     se = data.get("scheduler_enabled")
     if not isinstance(se, bool):
@@ -155,6 +183,10 @@ def load_settings() -> dict:
     pih = data.get("parser_interval_hours")
     if not isinstance(pih, int) or not _SCHEDULER_INTERVAL_MIN <= pih <= _SCHEDULER_INTERVAL_MAX:
         data["parser_interval_hours"] = _DEFAULT_SETTINGS["parser_interval_hours"]
+    # Backfill the telegram-bot toggle (bool).
+    be = data.get("bot_enabled")
+    if not isinstance(be, bool):
+        data["bot_enabled"] = False
     # Backfill the twogis parser_max_pages key (added in task_2gis_2do.md).
     pmp = data.get("parser_max_pages")
     if isinstance(pmp, dict) and "twogis" not in pmp:
@@ -538,11 +570,15 @@ def _compute_price_change(history: list[dict]) -> dict | None:
 def _port_is_free(port: int) -> bool:
     """True when nothing listens on *port*.
 
-    Uses SO_EXCLUSIVEADDRUSE so the probe also detects listeners that were
-    bound with SO_REUSEADDR (which is what Werkzeug's dev server does).
+    Windows: SO_EXCLUSIVEADDRUSE makes the probe also detect listeners that
+    were bound with SO_REUSEADDR (which is what Werkzeug's dev server does).
+    POSIX: SO_REUSEADDR alone never allows two live listeners, so a plain
+    bind already fails with EADDRINUSE while a real listener holds the port.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    _exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+    if _exclusive is not None:
+        sock.setsockopt(socket.SOL_SOCKET, _exclusive, 1)
     try:
         sock.bind(("0.0.0.0", port))
         return True
@@ -552,8 +588,10 @@ def _port_is_free(port: int) -> bool:
         sock.close()
 
 
-def _port_owner_pids(port: int) -> str:
-    """PIDs listening on *port* (via ``netstat -ano``), or '' if unknown."""
+_IS_POSIX = sys.platform != "win32"
+
+
+def _port_owner_pids_windows(port: int) -> str:
     try:
         # errors="replace": netstat output is locale-encoded (cp1251 here);
         # a hard decode failure would leave stdout=None in the reader thread.
@@ -569,3 +607,86 @@ def _port_owner_pids(port: int) -> str:
                 and parts[1].rsplit(":", 1)[-1] == str(port):
             pids.add(parts[4])
     return ", ".join(sorted(pids))
+
+
+def _port_owner_pids_posix(port: int) -> str:
+    """PIDs listening on *port* via ``ss`` (iproute2), fallback ``lsof``."""
+    pids = set()
+    try:
+        out = subprocess.run(["ss", "-tlnp"], capture_output=True,
+                             text=True, errors="replace",
+                             timeout=10).stdout or ""
+    except Exception:
+        out = ""
+    for line in out.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "LISTEN":
+            continue
+        if not any(p.rsplit(":", 1)[-1] == str(port) for p in parts[1:5]):
+            continue
+        pids.update(re.findall(r"pid=(\d+)", line))
+    if not pids:
+        try:
+            out = subprocess.run(
+                ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-F", "p"],
+                capture_output=True, text=True, errors="replace",
+                timeout=10).stdout or ""
+        except Exception:
+            out = ""
+        pids.update(re.findall(r"^p(\d+)$", out, flags=re.MULTILINE))
+    return ", ".join(sorted(pids))
+
+
+def _port_owner_pids(port: int) -> str:
+    """PIDs listening on *port* (cross-platform), or '' if unknown."""
+    return (_port_owner_pids_posix if _IS_POSIX
+            else _port_owner_pids_windows)(port)
+
+
+def _pid_command_line(pid: str) -> str:
+    """Command line of a process, '' when unknown/unreadable.
+
+    POSIX: /proc/<pid>/cmdline (argv is NUL-separated). Windows: PowerShell.
+    """
+    if _IS_POSIX:
+        try:
+            data = Path(f"/proc/{int(pid)}/cmdline").read_bytes()
+        except (ValueError, OSError):
+            return ""
+        return data.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f'(Get-CimInstance Win32_Process -Filter "ProcessId={pid}").CommandLine'],
+            capture_output=True, text=True, errors="replace", timeout=15,
+        ).stdout or ""
+    except Exception:
+        return ""
+    return out.strip()
+
+
+def free_port(port: int, app_tag: str = "app.py") -> bool:
+    """Kill a stale instance of THIS app holding *port*, then re-check.
+
+    Safety: only processes whose command line contains ``app_tag`` are
+    killed — an unrelated program that happens to own the port is left
+    alone (caller falls back to the manual-hint error). Returns True when
+    the port is free afterwards.
+    """
+    if _port_is_free(port):
+        return True
+    pids = [p.strip() for p in _port_owner_pids(port).split(",") if p.strip()]
+    kill_cmd = (["kill", "-9"] if _IS_POSIX else ["taskkill", "/F", "/PID"])
+    for pid in pids:
+        if app_tag in _pid_command_line(pid):
+            try:
+                subprocess.run([*kill_cmd, pid],
+                               capture_output=True, timeout=15)
+            except Exception:
+                pass
+    # Give the OS a moment to release the socket.
+    for _ in range(10):
+        if _port_is_free(port):
+            return True
+        time.sleep(0.5)
+    return False

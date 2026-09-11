@@ -31,6 +31,7 @@ from webapp.core import (  # noqa: F401
     _port_owner_pids,
     _save_results,
     _to_dict,
+    free_port,
     load_settings,
     save_settings,
 )
@@ -84,6 +85,15 @@ if "pytest" not in sys.modules:
     except Exception as exc:
         log.warning("[scheduler] failed to start: %s", exc)
 
+# Start the embedded telegram bot if enabled in settings (needs
+# bot_token.txt or the BOT_TOKEN env var; missing token = warning only).
+if "pytest" not in sys.modules:
+    try:
+        import telegram_bot
+        telegram_bot.start_from_settings(_load_settings_startup())
+    except Exception as exc:
+        log.warning("[bot] failed to start: %s", exc)
+
 # Sync the shared free-proxy pool with persisted settings at startup so a
 # restart picks up the enabled flag + sources without a manual settings call.
 try:
@@ -97,20 +107,30 @@ if __name__ == "__main__":
     # port. Werkzeug binds with SO_REUSEADDR, so a second `python app.py`
     # would "start" fine while the old process keeps answering the requests —
     # its logs then go to the old (often closed) terminal and the new one
-    # shows nothing. Fail fast with a hint instead.
+    # shows nothing. AUTO-FIX: kill the stale instance automatically (only
+    # processes whose command line is app.py are eligible); if the port is
+    # still busy after that — e.g. an unrelated program owns it — fail fast
+    # with the manual hint instead of killing the wrong thing.
     _PORT = 5000
-    if not _port_is_free(_PORT):
+    was_busy = not _port_is_free(_PORT)
+    if not free_port(_PORT):
         owner = _port_owner_pids(_PORT)
+        import os
+        if os.name == "nt":
+            kill_hint = f"taskkill /F /PID {owner or '<PID>'}"
+        else:
+            kill_hint = f"kill -9 {owner or '<PID>'}"
         print(
-            f"\nПорт {_PORT} уже занят (PID {owner or 'неизвестен'}): "
-            f"предыдущий экземпляр этого приложения всё ещё работает.\n"
-            f"Запросы обрабатывает он, поэтому его логи выводятся в тот "
-            f"терминал, где он запущен, а в этом терминале логов не видно.\n"
-            f"Закройте старый процесс и запустите заново:\n"
-            f"    taskkill /F /PID {owner or '<PID>'}\n",
+            f"\nПорт {_PORT} занят (PID {owner or 'неизвестен'}) и не был "
+            f"освобождён автоматически: процесс не похож на этот сервер.\n"
+            f"Освободите порт вручную:\n"
+            f"    {kill_hint}\n",
             file=sys.stderr,
         )
         sys.exit(1)
+    if was_busy:
+        log.info("[app] порт %d был занят — старый экземпляр завершён "
+                 "автоматически", _PORT)
     # debug=False: the Werkzeug debugger allows arbitrary code execution and
     # the app binds to 0.0.0.0, so a debug instance must never be exposed.
     # threaded=True so a long PDF export (which downloads many photos) does

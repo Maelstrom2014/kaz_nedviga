@@ -377,3 +377,49 @@ class TestMultiplePhotos:
             if r.photo:
                 photos = r.photo.split("|")
                 assert all(p for p in photos)
+
+
+# ============================================================
+# free_port: auto-kill of a stale app.py instance on a busy port
+# ============================================================
+
+class TestFreePort:
+
+    def test_free_port_when_free(self):
+        from webapp.core import free_port
+        # bind+release proves the port is free; 0 lets the OS pick one
+        import socket
+        s = socket.socket()
+        s.bind(("0.0.0.0", 0))
+        port = s.getsockname()[1]
+        s.close()
+        assert free_port(port) is True
+
+    def test_does_not_kill_unrelated_owner(self):
+        """A busy port owned by a non-app.py process must NOT be killed.
+
+        The test process itself owns the socket — its command line contains
+        'pytest', not 'app.py', so the safety check must refuse the kill.
+        """
+        import socket
+        import time as _time
+
+        from webapp.core import _port_is_free, free_port
+        blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        port = blocker.getsockname()[1]
+        try:
+            assert not _port_is_free(port)
+            assert free_port(port) is False  # refused to kill: not app.py
+        finally:
+            blocker.close()
+            _time.sleep(0.3)
+
+    def test_pid_command_line_returns_text(self):
+        from webapp.core import _pid_command_line
+        import os
+        # Current process: command line exists and mentions python
+        cl = _pid_command_line(str(os.getpid()))
+        assert isinstance(cl, str)
+        assert "python" in cl.lower() or cl == ""

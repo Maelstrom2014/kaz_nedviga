@@ -81,6 +81,21 @@ def phone_file_handler() -> RotatingFileHandler:
     return h
 
 
+def bot_file_handler() -> RotatingFileHandler:
+    """Rotating handler for the telegram-bot log (logs/telegram_bot.log).
+
+    The "bot" logger writes here only: search activity, user registrations,
+    subscription requests, quota denials, support messages. Not shared with
+    "app"/"parsers" (a dedicated file keeps bot traffic out of server logs).
+    """
+    h = SafeRotatingFileHandler(
+        str(LOGS_DIR / "telegram_bot.log"), maxBytes=MAX_BYTES,
+        backupCount=BACKUPS, encoding="utf-8")
+    h.setLevel(logging.DEBUG)
+    h.setFormatter(FULL_FMT)
+    return h
+
+
 def console_handler(level: int = logging.DEBUG) -> logging.StreamHandler:
     h = logging.StreamHandler()
     h.setLevel(level)

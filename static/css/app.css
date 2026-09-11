@@ -28,61 +28,82 @@
 }
   .rates-refresh:hover { border-color: var(--accent); color: var(--accent); }
   .rates-refresh:disabled { opacity: .5; cursor: wait; }
-  /* === Dark themes === */
+/* === Dark themes === */
   [data-theme="carbon"] {
-   --bg: #18181b; --card: #27272a; --card-2: #3f3f46;
-   --accent: #2dd4bf; --accent-2: #06b6d4;
-   --text: #fafafa; --text-dim: #a1a1aa; --border: #52525b;
-}
+    /* Графит: нейтральные тёмные серые + сдержанный стальной синий */
+    --bg: #111316; --card: #1a1d21; --card-2: #26292f;
+    --accent: #5c8ac7; --accent-2: #3d6ca8;
+    --text: #e9ecef; --text-dim: #98a1ab; --border: #3a4048;
+  }
   [data-theme="forest"] {
-   --bg: #0c1410; --card: #16241c; --card-2: #1f3327;
-   --accent: #4ade80; --accent-2: #a3e635;
-   --text: #ecfdf5; --text-dim: #86efac; --border: #2f4a3a;
-}
+    /* Тёмная хвоя: приглушённый изумруд вместо неонового зелёного */
+    --bg: #0e1613; --card: #162220; --card-2: #203029;
+    --accent: #35977c; --accent-2: #1f6f5c;
+    --text: #e7efea; --text-dim: #93a89c; --border: #2f423a;
+  }
   /* === Light themes === */
   [data-theme="daylight"] {
-   --bg: #f1f5f9; --card: #ffffff; --card-2: #e2e8f0;
-   --accent: #2563eb; --accent-2: #7c3aed;
-   --text: #0f172a; --text-dim: #64748b; --border: #cbd5e1;
-   --success: #16a34a; --warning: #d97706; --danger: #dc2626;
-}
+    /* Корпоративный светлый: белые карточки, синий + петроль */
+    --bg: #f4f6f8; --card: #ffffff; --card-2: #e8ecf1;
+    --accent: #1f5fbf; --accent-2: #0e7490;
+    --text: #111827; --text-dim: #5f6b7a; --border: #cdd5de;
+    --success: #15803d; --warning: #b45309; --danger: #b91c1c;
+  }
   [data-theme="sand"] {
-   --bg: #faf6ec; --card: #fffdf6; --card-2: #efe5d2;
-   --accent: #c2820a; --accent-2: #9a6b0d;
-   --text: #422006; --text-dim: #92600f; --border: #ddc9a6;
-   --success: #16a34a; --warning: #d97706; --danger: #dc2626;
-}
-  [data-theme="rose"] {
-   --bg: #fdf2f8; --card: #ffffff; --card-2: #fce7f3;
-   --accent: #db2777; --accent-2: #9333ea;
-   --text: #831843; --text-dim: #be185d; --border: #f9a8d4;
-   --success: #16a34a; --warning: #d97706; --danger: #dc2626;
-}
+    /* Тёплый нейтральный: молочный фон, бронзовый акцент */
+    --bg: #f5f2ec; --card: #ffffff; --card-2: #ece7dd;
+    --accent: #8a6d4b; --accent-2: #6b5537;
+    --text: #2b2822; --text-dim: #6e6a60; --border: #d8d2c4;
+    --success: #15803d; --warning: #a16207; --danger: #b91c1c;
+  }
+  [data-theme="slate"] {
+    /* Светлый сланец: графитовый, монохромно-деловой */
+    --bg: #eef0f3; --card: #ffffff; --card-2: #e2e6ec;
+    --accent: #334155; --accent-2: #64748b;
+    --text: #1e293b; --text-dim: #5b6472; --border: #c8cfd8;
+    --success: #15803d; --warning: #b45309; --danger: #b91c1c;
+  }
   [data-theme="midnight"] {
    --bg: #0f172a; --card: #1e293b; --card-2: #334155;
    --accent: #3b82f6; --accent-2: #8b5cf6;
    --text: #f1f5f9; --text-dim: #94a3b8; --border: #475569;
 }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html { overflow-x: clip; }
+    /* App-shell layout: the page as a whole never scrolls. Only the inner
+       panels scroll (filters, cards list, tab bodies), so the map and the
+       top menu stay pinned at any scroll position. position:sticky proved
+       unreliable here — the shell makes it structurally impossible to
+       scroll them out of view. */
+    html, body { height: 100%; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
+      overflow: hidden;
     }
     /* Layout */
-    .container { max-width: 1600px; margin: 0 auto; padding: 20px; }
-    .grid-layout { display: grid; grid-template-columns: 340px 1fr; gap: 20px; }
-    @media (max-width: 900px) { .grid-layout { grid-template-columns: 1fr; } }
+    .container {
+      max-width: 1600px; margin: 0 auto; padding: 20px;
+      height: 100%; display: flex; flex-direction: column;
+    }
+    .grid-layout {
+      display: grid; grid-template-columns: 340px 1fr; gap: 20px;
+      flex: 1; min-height: 0;
+    }
+    @media (max-width: 900px) {
+      .grid-layout {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+      .search-panel { height: auto; max-height: 42vh; }
+    }
     /* Search panel */
     .search-panel {
       background: var(--card);
       border-radius: var(--radius);
       padding: 16px;
       border: 1px solid var(--border);
-      position: sticky; top: 80px;
-      max-height: calc(100vh - 100px);
+      height: 100%;
       overflow-y: auto;
       overflow-x: hidden;
     }
@@ -122,7 +143,7 @@
     .btn-search:active { transform: scale(.98); }
     .btn-search:disabled { opacity: .5; cursor: wait; }
     /* Main content */
-    .main-content { display: flex; flex-direction: column; gap: 20px; }
+    .main-content { display: flex; flex-direction: column; gap: 20px; min-height: 0; overflow: hidden; }
     /* Map section */
     .map-section {
       background: var(--card); border-radius: var(--radius);
@@ -143,19 +164,28 @@
       font-weight: 600; transition: .2s;
     }
     .heat-toggle.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-    #map { height: 500px; width: 100%; }
+    #map {
+      height: 500px; width: 100%;
+      /* Leaflet's z-indexed/transformed panes can escape an ancestor's
+         overflow clip, so round AND clip the map element itself. clip-path
+         cannot be escaped by composited layers. */
+      border-radius: 0 0 var(--radius) var(--radius);
+      overflow: hidden;
+      clip-path: inset(0 round 0 0 var(--radius) var(--radius));
+    }
     /* Results */
     .results-header {
       display: flex; align-items: center; justify-content: space-between;
       flex-wrap: wrap; gap: 12px;
     }
     .results-header h2 { font-size: 1.1rem; }
-    .export-buttons { display: flex; gap: 8px; }
+    .export-buttons { display: flex; gap: 5px; flex-wrap: wrap; }
     .btn-export {
-      padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
-      background: var(--card-2); color: var(--text); font-size: .85rem;
+      padding: 3px 9px; border-radius: 6px; border: 1px solid var(--border);
+      background: var(--card-2); color: var(--text); font-size: .72rem;
       cursor: pointer; font-weight: 600; transition: .2s;
-      display: flex; align-items: center; gap: 6px;
+      display: flex; align-items: center; gap: 4px;
+      white-space: nowrap;
     }
     .btn-export:hover { border-color: var(--accent); }
     .results-grid {
@@ -240,7 +270,7 @@
     .sort-select {
       background: var(--card); color: var(--text);
       border: 1px solid var(--border); border-radius: 6px;
-      padding: 4px 8px; font-size: .8rem; cursor: pointer;
+      padding: 3px 6px; font-size: .75rem; cursor: pointer;
     }
     .sort-select:focus { border-color: var(--accent); outline: none; }
     .listing-body { padding: 14px; }
@@ -268,27 +298,57 @@
     .phone-repeat { color: var(--accent); font-weight: 700; margin-left: 4px; }
     .card-focused { outline: 3px solid var(--accent); outline-offset: 2px; }
     .district-label { pointer-events: none; }
+    /* Two-column search layout: the map column is a fixed full-height
+       panel; only the cards list scrolls (inside .results-grid), so the
+       map and the tab bar can never scroll out of view. */
     #searchTab.map-right.active {
-      display: grid; grid-template-columns: minmax(0, 1fr) minmax(560px, 1.15fr); gap: 20px; align-items: start;
-      width: calc(100% + 20px + max(0px, (100vw - 1600px) / 2));
+      display: flex; flex-direction: row-reverse; /* карта справа, карточки слева */
+      gap: 20px; align-items: stretch;
+      width: 100%; min-height: 0;
+      overflow: hidden;
+    }
+    #searchTab.map-right .map-col {
+      flex: 1.2 1 0; min-width: 520px; height: 100%; min-height: 0;
+    }
+    #searchTab.map-right .results-col {
+      flex: 1 1 0; min-width: 0; min-height: 0;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+    #searchTab.map-right .results-header {
+      flex: none; flex-wrap: nowrap; /* сортировка + кнопки в одну строку */
+    }
+    #searchTab.map-right .results-header .export-buttons {
+      flex-wrap: nowrap; margin-left: auto; /* кнопки справа от сортировки */
     }
     #searchTab.map-right .map-section {
-      grid-column: 2; grid-row: 1 / -1; position: sticky; top: 20px; align-self: start;
-      display: flex; flex-direction: column; height: calc(100vh - 40px);
-      padding-right: 12px; /* небольшой отступ карты от правого края */
+      height: 100%;
+      display: flex; flex-direction: column;
     }
-    #searchTab.map-right .results-header,
-    #searchTab.map-right .results-grid { grid-column: 1; }
-    #searchTab.map-right #map { flex: 1; height: auto; min-height: 400px; }
-    #searchTab.map-right .results-grid { grid-column: 1; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #searchTab.map-right #map { flex: 1; height: auto; min-height: 280px; }
+    #searchTab.map-right .results-grid {
+      flex: 1; min-height: 0;
+      /* Колонки/ширина карточек задаёт JS (настройки «Вид карточек»);
+         здесь — запасной вариант до загрузки настроек. */
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      /* Row height must come from the card content (photo + body). Without
+         this Chromium resolves auto rows against the grid's definite
+         flex height — rows shrink to equal fractions of the container and
+         cards get clipped to one-line slivers. */
+      grid-auto-rows: max-content;
+      /* Ширина карточек >100% расширяет колонку результатов (flex-grow
+         из настроек), сжимая карту и фильтры — без горизонтального скролла. */
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 2px; /* room for card hover shadows */
+    }
+    .results-grid .empty-state { grid-column: 1 / -1; }
+    .results-grid::-webkit-scrollbar { width: 5px; }
+    .results-grid::-webkit-scrollbar-track { background: var(--card-2); border-radius: 3px; }
+    .results-grid::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 3px; }
     @media (max-width: 1400px) {
-      #searchTab.map-right.active { grid-template-columns: 1fr; padding-right: 0; width: 100%; }
-      #searchTab.map-right .map-section {
-        grid-column: 1; grid-row: auto; position: static; max-height: none;
-      }
-      #searchTab.map-right .results-header,
-      #searchTab.map-right .results-grid { grid-column: 1; }
-      #searchTab.map-right #map { height: 500px; }
+      #searchTab.map-right.active { flex-direction: column; }
+      #searchTab.map-right .map-col { flex: none; width: 100%; min-width: 0; height: 420px; }
+      #searchTab.map-right .results-col { flex: 1 1 0; min-height: 0; }
     }
     /* Loading */
     .loading-overlay {
@@ -314,7 +374,13 @@
     /* Sites tags */
     .site-tag { font-size: .7rem; color: var(--text-dim); }
     /* Tab switcher */
-    .tab-switcher { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 20px; }
+    .tab-switcher {
+      display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 20px;
+      /* Pinned by construction: the shell locks the page scroll, the bar
+         sits above the scrollable tab bodies — it cannot move. */
+      flex: none;
+      background: var(--bg);
+    }
     .tab-btn {
       padding: 10px 24px; background: none; border: none; color: var(--text-dim);
       font-size: 1rem; font-weight: 600; cursor: pointer; border-bottom: 3px solid transparent;
@@ -323,7 +389,10 @@
     .tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
     .tab-btn:hover { color: var(--text); }
     .tab-content { display: none; }
-    .tab-content.active { display: block; }
+    .tab-content.active {
+      display: block; flex: 1; min-height: 0;
+      overflow-y: auto; overflow-x: hidden;
+    }
     /* Favorite button on cards */
     .btn-fav {
       position: absolute; top: 10px; right: 10px;

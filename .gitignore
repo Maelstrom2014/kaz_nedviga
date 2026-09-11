@@ -21,6 +21,10 @@ cache/
 logs/
 *.log
 
+# Telegram bot token (secret — never commit; see telegram_bot.py)
+bot_token.txt
+.env
+
 # Debug / recon scripts
 tools/
 

@@ -52,7 +52,8 @@ class TestKrishaDetailPhotos:
     def test_fetch_detail_photos_empty_on_error(self):
         parser = KrishaParser()
         listing = Listing(url="https://krisha.kz/a/show/999", source="krisha.kz")
-        with patch.object(parser, "fetch", side_effect=Exception("network error")):
+        with patch.object(parser, "fetch_session",
+                          side_effect=Exception("network error")):
             photos = parser._fetch_detail_photos(listing)
         assert photos == []
 
@@ -90,7 +91,8 @@ class TestKnDetailPhotos:
         listing = Listing(url="https://www.kn.kz/card/123456", source="kn.kz")
         with patch.object(parser, "fetch_session",
                           return_value=(MagicMock(), load_fixture("kn_detail"))), \
-             patch.object(parser, "fetch", return_value=load_fixture("kn_map")):
+             patch.object(parser, "fetch_detail_html",
+                          return_value=load_fixture("kn_map")):
             parser._fetch_detail_photos(listing)
         assert listing.lat == 43.292631460374
         assert listing.lon == 77.014389068787
@@ -113,13 +115,15 @@ class TestKnDetailPhotos:
         detail = "<html><body><turbo-frame id='card-map-123' src='/card/map/123'>load</turbo-frame></body></html>"
         with patch.object(parser, "fetch_session",
                           return_value=(MagicMock(), detail)), \
-             patch.object(parser, "fetch", return_value=map_html):
+             patch.object(parser, "fetch_detail_html", return_value=map_html):
             parser._fetch_detail_photos(listing)
         assert listing.lat is None
         assert listing.lon is None
 
 
 class TestOlxDetailPhotos:
+    # olx uses the cffi fetch path (use_cffi=True) -> fetch_detail
+    # dispatches to self.fetch, not fetch_session.
     def test_extracts_all_gallery_slides(self):
         parser = OlxParser()
         listing = Listing(url="https://www.olx.kz/d/obyavlenie/123", source="olx.kz")

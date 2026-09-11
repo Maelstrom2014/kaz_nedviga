@@ -206,9 +206,9 @@ class KnParser(BaseParser):
         attributes carrying the exact pin coordinates.
         """
         try:
-            # fetch_session: the phone endpoint below only answers for the
-            # session that loaded the detail page (cookie + Referer).
-            session, html = self.fetch_session(listing.url)
+            # Cached detail fetch: (None, html) on cache hit — _enrich_phone
+            # then falls back to an ephemeral session for the reveal XHR.
+            session, html = self.fetch_detail(listing.url)
             soup = self.parse_html(html)
         except Exception:
             return []
@@ -255,7 +255,8 @@ class KnParser(BaseParser):
         if not map_url.startswith("http"):
             map_url = self.base_url + map_url
         try:
-            map_html = self.fetch(map_url)
+            # Turbo frame is stable per listing — same TTL cache as the page.
+            map_html = self.fetch_detail_html(map_url)
         except Exception:
             return
         m = re.search(

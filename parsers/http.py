@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
+import threading
 import time
 from typing import ClassVar
 
@@ -119,6 +120,20 @@ class HttpMixin:
     def __init__(self):
         super().__init__()
         self._cffi_session = None
+        # One requests.Session per worker thread: _enrich_photos runs in a
+        # ThreadPoolExecutor and requests.Session is not thread-safe. A
+        # thread-local session reuses the TCP+TLS connection across page and
+        # detail fetches (~100-300ms saved per request) and keeps cookies —
+        # which the phone-reveal endpoints (kn.kz, krisha.kz) require.
+        self._tls = threading.local()
+
+    def _get_session(self) -> requests.Session:
+        """Return this thread's persistent session (created on first use)."""
+        sess = getattr(self._tls, "session", None)
+        if sess is None:
+            sess = requests.Session()
+            self._tls.session = sess
+        return sess
 
     def _proxy_kwargs(self) -> dict:
         """Return ``{"http": url, "https": url}`` for the current rotation proxy,
@@ -279,6 +294,40 @@ class HttpMixin:
         """
         return self._fetch_requests_session(url)
 
+    def fetch_detail(self, url: str,
+                     ttl: float | None = None) -> tuple[requests.Session | None, str]:
+        """GET a detail page with a short-TTL disk cache (parsers/htmlcache).
+
+        Returns ``(session, html)`` on a live requests-path fetch — session
+        usable for follow-up phone-reveal XHRs — or ``(None, html)`` on a
+        cache hit or on the cffi path (no requests session there), where
+        callers fall back to an ephemeral session for XHRs (``_enrich_phone``
+        already accepts ``session=None``).
+
+        Only use for detail pages: listing/search pages vary per search
+        params and must never be cached.
+        """
+        from . import htmlcache
+        html = htmlcache.get(url, ttl=(ttl if ttl is not None else htmlcache._TTL_SECONDS))
+        if html is not None:
+            return None, html
+        if self.use_cffi:
+            # cffi parsers (etagi): full fetch stack incl. WAF handling.
+            # No requests.Session — phone extraction uses page source only.
+            html = self.fetch(url)
+            htmlcache.put(url, html)
+            return None, html
+        # fetch_session is the requests-path seam (cookies for phone-reveal
+        # XHRs); going through it keeps one code path for both fetch styles.
+        session, html = self.fetch_session(url)
+        htmlcache.put(url, html)
+        return session, html
+
+    def fetch_detail_html(self, url: str,
+                          ttl: float | None = None) -> str:
+        """Cached detail fetch returning just the HTML (any fetch path)."""
+        return self.fetch_detail(url, ttl=ttl)[1]
+
     def _fetch_requests(self, url: str) -> str:
         _, text = self._fetch_requests_session(url)
         return text
@@ -291,9 +340,15 @@ class HttpMixin:
         are tried, then one direct request, so the site still parses when
         every proxy is dead. Connection-level failures and repeated 403/429
         rotate to the next proxy; a genuine server error raises immediately."""
-        session = requests.Session()
-        # Fresh randomized headers for each request
-        session.headers.update({**_random_headers(), **{k: v for k, v in self.headers.items() if k not in _random_headers()}})
+        # Persistent per-thread session: reuses TCP+TLS connections and keeps
+        # cookies (needed by phone-reveal XHR endpoints). Headers are still
+        # randomized per request.
+        session = self._get_session()
+        rh = _random_headers()
+        # self.headers wins over the random pool only for keys the random set
+        # does not define (previously this generated a second, different
+        # random set and excluded keys from it).
+        session.headers.update({**rh, **{k: v for k, v in self.headers.items() if k not in rh}})
         last_exc = None
         for pk in self._proxy_tries():
             session.proxies = pk
@@ -307,21 +362,7 @@ class HttpMixin:
                               self.name, resp.status_code, len(resp.content),
                               resp.headers.get("Content-Type", "?")[:60])
                     resp.raise_for_status()
-                    # Fix encoding: prefer content-type header, then apparent, then utf-8
-                    ct = resp.headers.get("Content-Type", "")
-                    if "charset=" in ct:
-                        resp.encoding = ct.split("charset=")[-1].strip()
-                    elif resp.apparent_encoding:
-                        resp.encoding = resp.apparent_encoding
-                    else:
-                        resp.encoding = "utf-8"
-                    text = resp.text
-                    # Fallback: if text looks like mojibake, try utf-8 directly
-                    if "\\u0" in repr(text)[:200] or "Ä" in text[:100]:
-                        try:
-                            text = resp.content.decode("utf-8")
-                        except Exception:
-                            pass
+                    text = self._decode_response(resp)
                     self._note_proxy_used(pk)
                     return session, text
                 except requests.exceptions.SSLError as exc:
@@ -354,3 +395,31 @@ class HttpMixin:
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("requests fetch failed")
+
+    @staticmethod
+    def _decode_response(resp) -> str:
+        """Decode ``resp`` to text without full-body charset detection.
+
+        Order: strict utf-8 -> charset from Content-Type -> apparent_encoding
+        (chardet scans the whole body, hundreds of ms on big pages, so it is
+        the last resort) -> latin-1 (never fails). utf-8 first because sites
+        mislabel charsets: strictly decoding catches the mismatch, while
+        ``errors="replace"`` on the declared charset would silently mojibake.
+        """
+        try:
+            return resp.content.decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        ct = resp.headers.get("Content-Type", "")
+        if "charset=" in ct:
+            enc = ct.split("charset=")[-1].strip().strip(";").strip()
+            try:
+                return resp.content.decode(enc)
+            except (LookupError, UnicodeDecodeError):
+                pass
+        if resp.apparent_encoding:
+            try:
+                return resp.content.decode(resp.apparent_encoding, errors="replace")
+            except (LookupError, UnicodeDecodeError):
+                pass
+        return resp.content.decode("latin-1")

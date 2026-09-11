@@ -104,10 +104,10 @@ class TestClearFavorites:
         assert client.get("/api/favorites").get_json()["total"] == 0
 
     def test_clear_keeps_theme(self, client):
-        client.post("/api/settings", json={"theme": "rose"})
+        client.post("/api/settings", json={"theme": "slate"})
         client.post("/api/favorites", json=SAMPLE)
         resp = client.post("/api/favorites/clear")
-        assert resp.get_json()["theme"] == "rose"
+        assert resp.get_json()["theme"] == "slate"
 
 
 class TestResetDatabase:
@@ -303,9 +303,9 @@ class TestHideNoPhoto:
 
     def test_set_together_with_theme(self, client):
         resp = client.post("/api/settings",
-                           json={"theme": "rose", "hide_no_photo": True})
+                           json={"theme": "slate", "hide_no_photo": True})
         assert resp.status_code == 200
-        assert load_settings()["theme"] == "rose"
+        assert load_settings()["theme"] == "slate"
         assert load_settings()["hide_no_photo"] is True
 
     def test_api_results_hides_no_photo(self, client, results_cache):
@@ -342,6 +342,96 @@ class TestHideNoPhoto:
     def test_settings_tab_contains_toggle(self, client):
         resp = client.get("/")
         assert b'hideNoPhoto' in resp.data
+
+
+class TestCardLayout:
+    """Настройки «Вид карточек результатов»: колонки и ширина."""
+
+    def test_defaults(self, client):
+        data = client.get("/api/settings").get_json()
+        assert data.get("results_columns") == 2
+        assert data.get("card_width_scale") == 100
+
+    def test_set_and_persist(self, client):
+        resp = client.post("/api/settings",
+                           json={"results_columns": 3, "card_width_scale": 130})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["results_columns"] == 3
+        assert data["card_width_scale"] == 130
+        st = load_settings()
+        assert st["results_columns"] == 3
+        assert st["card_width_scale"] == 130
+
+    def test_clamped_to_bounds(self, client):
+        resp = client.post("/api/settings",
+                           json={"results_columns": 99, "card_width_scale": 1000})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["results_columns"] == 4
+        assert data["card_width_scale"] == 150
+        resp = client.post("/api/settings",
+                           json={"results_columns": 0, "card_width_scale": -5})
+        data = resp.get_json()
+        assert data["results_columns"] == 1
+        assert data["card_width_scale"] == 50
+
+    def test_invalid_values_fall_back_to_default(self, client):
+        resp = client.post("/api/settings",
+                           json={"results_columns": "abc",
+                                 "card_width_scale": None})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["results_columns"] == 2
+        assert data["card_width_scale"] == 100
+
+    def test_settings_tab_contains_controls(self, client):
+        resp = client.get("/")
+        assert b'resultsColumnsInput' in resp.data
+        assert b'cardWidthScaleInput' in resp.data
+
+
+class TestCrawlSources:
+    """Автосохранение выбора источников «Запуска парсинга»."""
+
+    def test_default_all_sites(self, client):
+        data = client.get("/api/settings").get_json()
+        assert data.get("crawl_sources") == []
+
+    def test_set_and_persist(self, client):
+        resp = client.post("/api/settings",
+                           json={"crawl_sources": ["krisha.kz", "olx.kz"]})
+        assert resp.status_code == 200
+        assert resp.get_json()["crawl_sources"] == ["krisha.kz", "olx.kz"]
+        assert load_settings()["crawl_sources"] == ["krisha.kz", "olx.kz"]
+
+    def test_unknown_sites_filtered(self, client):
+        resp = client.post("/api/settings",
+                           json={"crawl_sources": ["krisha.kz", "nonexistent.kz"]})
+        assert resp.get_json()["crawl_sources"] == ["krisha.kz"]
+
+    def test_invalid_type_400(self, client):
+        resp = client.post("/api/settings", json={"crawl_sources": "krisha.kz"})
+        assert resp.status_code == 400
+
+    def test_empty_list_means_all(self, client):
+        client.post("/api/settings",
+                    json={"crawl_sources": ["krisha.kz", "olx.kz"]})
+        resp = client.post("/api/settings", json={"crawl_sources": []})
+        assert resp.get_json()["crawl_sources"] == []
+
+    def test_ui_blocks_placement(self, client):
+        """Блок «Запуск парсинга» перенесён в настройки; в анализаторе —
+        только сводка и статистика."""
+        html = client.get("/").data.decode("utf-8")
+        settings_idx = html.index('id="settingsTab"')
+        analyzer_idx = html.index('id="analyzerTab"')
+        for marker in ("Запуск парсинга", "sourcesGroup", "crawlBtn",
+                       "maxPagesInput"):
+            assert marker in html[settings_idx:analyzer_idx]
+        analyzer_part = html[analyzer_idx:]
+        assert "sourcesGroup" not in analyzer_part
+        assert "analyzerSummary" in analyzer_part
 
 
 class TestParserMaxPages:

@@ -18,7 +18,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
   <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=7">
 </head>
  <body>
 
@@ -91,6 +91,8 @@
             </label>
           </div>
         </form>
+        <h2 id="resultsTitle" style="font-size:1.02rem;margin:14px 0 0;">Результаты: 0 объявлений</h2>
+        <div id="resultStats" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:.78rem;color:var(--text-dim);">Нет данных</div>
       </aside>
 
       <!-- Main content: Map + Results -->
@@ -105,22 +107,25 @@
 
         <!-- Tab: Search -->
         <div class="tab-content active map-right" id="searchTab">
-        <!-- Map -->
-        <div class="map-section">
-          <div class="map-header">
-            <h2>Карта Алматы — районы</h2>
-            <div class="heatmap-controls">
-              <button class="heat-toggle" id="districtsToggle">Районы</button>
-              <button class="heat-toggle" id="favoritesOnlyToggle">Только избранное</button>
+        <!-- Map column: fixed full-height panel — the page itself never
+             scrolls (app-shell layout), so the map and the tab bar above
+             it cannot move; only the cards list scrolls. -->
+        <div class="map-col">
+          <div class="map-section">
+            <div class="map-header">
+              <h2>Карта Алматы — районы</h2>
+              <div class="heatmap-controls">
+                <button class="heat-toggle" id="districtsToggle">Районы</button>
+                <button class="heat-toggle" id="favoritesOnlyToggle">Только избранное</button>
+              </div>
             </div>
+            <div id="map"></div>
           </div>
-          <div id="map"></div>
         </div>
 
-        <!-- Results -->
-        <div>
+        <!-- Results column -->
+        <div class="results-col">
           <div class="results-header">
-            <h2 id="resultsTitle">Результаты: 0 объявлений</h2>
             <select id="dateSort" class="sort-select" title="Сортировка результатов" onchange="applyClientFilters()">
               <option value="">Сортировка: по цене</option>
               <option value="asc">Дата: старые → новые</option>
@@ -138,7 +143,7 @@
           <div class="results-grid" id="resultsGrid">
             <div class="empty-state">Нет данных. Запустите парсинг на вкладке «Анализатор» — фильтры слева сузят результат в реальном времени.</div>
           </div>
-        </div>
+        </div><!-- /results-col -->
         </div><!-- /searchTab -->
 
         <!-- Tab: Favorites -->
@@ -232,6 +237,29 @@
                 Убирать все объявления без фото
               </label>
 
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Вид карточек результатов</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Количество колонок сетки карточек и ширина карточки в % от колонки (100 — обычная). Применяется сразу и сохраняется на сервере.</p>
+              <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                <div class="form-group" style="margin-bottom:0;">
+                  <label>Колонок (1–4)</label>
+                  <input type="number" id="resultsColumnsInput" min="1" max="4" step="1" style="width:80px;"
+                         onchange="setResultsColumns(this.value)">
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                  <label>Ширина карточки, % (50–150)</label>
+                  <input type="number" id="cardWidthScaleInput" min="50" max="150" step="10" style="width:80px;"
+                         onchange="setCardWidthScale(this.value)">
+                </div>
+                <button class="btn-export" onclick="resetCardLayout()">По умолчанию</button>
+              </div>
+
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Telegram-бот</h3>
+              <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Бот @kaz_home_nedviga_bot принимает поиск по фильтрам прямо в Telegram (10 предложений бесплатно). Токен читается из файла bot_token.txt.</p>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.9rem;">
+                <input type="checkbox" id="botEnabled" onchange="setBotEnabled(this.checked)" style="width:16px;height:16px;cursor:pointer;">
+                Запускать бота вместе с сервером
+              </label>
+
               <h3 style="font-size:1rem;margin:28px 0 12px;">Курс валют</h3>
               <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Курсы обновляются автоматически (каждые 10 минут) и при поиске. Применяются к ценам в карточках и избранном.</p>
               <div class="rates-bar" id="ratesBar" style="flex-wrap:wrap;justify-content:flex-start;padding:10px 14px;margin-bottom:8px;">
@@ -255,6 +283,27 @@
               </div>
               <div id="photoCacheInfo" style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;"></div>
 
+              <h3 style="font-size:1rem;margin:28px 0 12px;">Запуск парсинга</h3>
+              <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 12px;">Сборщик обходит выбранные сайты и наполняет кэш объявлений. Выбор источников сохраняется автоматически. Фильтры (комнаты, цена, район и т.д.) применяются к собранным данным в реальном времени на вкладке «Поиск и карта»; детальная статистика по каждому парсеру — на вкладке «Анализатор».</p>
+              <div class="crawl-controls" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;">
+                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
+                  <div class="form-group" style="margin:0;">
+                    <label>Страниц на каждый сайт (1–999)</label>
+                    <input type="number" id="maxPagesInput" name="max_pages" min="1" max="999" placeholder="по умолчанию" style="width:150px;">
+                    <small style="opacity:.65;display:block;margin-top:4px;">Пусто — стандартное число. Больше страниц = дольше поиск</small>
+                  </div>
+                  <button type="button" class="btn-search" id="crawlBtn" style="margin:0;">Поиск</button>
+                </div>
+                <div class="form-group" style="margin:0;">
+                  <label>Источники ({{ sites|length }})</label>
+                  <div class="checkbox-group sources-group" id="sourcesGroup">
+                    {% for s in sites %}
+                      <label><input type="checkbox" name="sources" value="{{ s.name }}" checked> {{ s.name }}</label>
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
+
               <h3 style="font-size:1rem;margin:28px 0 12px;">Страницы по сайтам</h3>
               <p style="font-size:.8rem;color:var(--text-dim);margin-bottom:14px;">Сколько страниц поиска парсить с каждого сайта. Сохраняется на сервере. Поле «страниц на сайт» в форме поиска задаёт единое число для всех — здесь можно настроить каждый сайт отдельно.</p>
               <div id="parserMaxPagesGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;"></div>
@@ -271,24 +320,24 @@
                   <span>Полночь</span>
                 </button>
                 <button class="theme-swatch" data-theme="carbon" onclick="setTheme('carbon')">
-                  <span class="theme-preview" style="background:linear-gradient(135deg,#18181b,#2dd4bf);"></span>
-                  <span>Карбон</span>
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#111316,#5c8ac7);"></span>
+                  <span>Графит</span>
                 </button>
                 <button class="theme-swatch" data-theme="forest" onclick="setTheme('forest')">
-                  <span class="theme-preview" style="background:linear-gradient(135deg,#0c1410,#4ade80);"></span>
-                  <span>Лес</span>
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#0e1613,#35977c);"></span>
+                  <span>Хвоя</span>
                 </button>
                 <button class="theme-swatch" data-theme="daylight" onclick="setTheme('daylight')">
-                  <span class="theme-preview" style="background:linear-gradient(135deg,#f1f5f9,#2563eb);"></span>
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#f4f6f8,#1f5fbf);"></span>
                   <span>Дневной</span>
                 </button>
                 <button class="theme-swatch" data-theme="sand" onclick="setTheme('sand')">
-                  <span class="theme-preview" style="background:linear-gradient(135deg,#faf6ec,#c2820a);"></span>
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#f5f2ec,#8a6d4b);"></span>
                   <span>Песок</span>
                 </button>
-                <button class="theme-swatch" data-theme="rose" onclick="setTheme('rose')">
-                  <span class="theme-preview" style="background:linear-gradient(135deg,#fdf2f8,#db2777);"></span>
-                  <span>Роза</span>
+                <button class="theme-swatch" data-theme="slate" onclick="setTheme('slate')">
+                  <span class="theme-preview" style="background:linear-gradient(135deg,#eef0f3,#334155);"></span>
+                  <span>Сланец</span>
                 </button>
               </div>
 
@@ -319,26 +368,6 @@
               <button class="btn-export" id="refreshAnalyzerBtn" onclick="loadParserStats()">Обновить</button>
             </div>
             <div style="padding: 16px 20px;">
-              <div class="crawl-controls" style="border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:18px;">
-                <h3 style="font-size:.95rem;margin:0 0 10px;">Запуск парсинга</h3>
-                <p style="font-size:.78rem;color:var(--text-dim);margin:0 0 12px;">Сборщик обходит выбранные сайты и наполняет кэш объявлений. Фильтры (комнаты, цена, район и т.д.) применяются к собранным данным в реальном времени на вкладке «Поиск и карта», а сколько объявлений они скрыли — в сводке ниже.</p>
-                <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;">
-                  <div class="form-group" style="margin:0;">
-                    <label>Страниц на каждый сайт (1–999)</label>
-                    <input type="number" id="maxPagesInput" name="max_pages" min="1" max="999" placeholder="по умолчанию" style="width:150px;">
-                    <small style="opacity:.65;display:block;margin-top:4px;">Пусто — стандартное число. Больше страниц = дольше поиск</small>
-                  </div>
-                  <button type="button" class="btn-search" id="crawlBtn" style="margin:0;">Поиск</button>
-                </div>
-                <div class="form-group" style="margin:0;">
-                  <label>Источники ({{ sites|length }})</label>
-                  <div class="checkbox-group sources-group" id="sourcesGroup">
-                    {% for s in sites %}
-                      <label><input type="checkbox" name="sources" value="{{ s.name }}" checked> {{ s.name }}</label>
-                    {% endfor %}
-                  </div>
-                </div>
-              </div>
               <div id="analyzerSummary" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;"></div>
               <div id="analyzerGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:12px;">
                 <div class="empty-state">Запустите поиск — здесь появится детальная статистика по каждому парсеру.</div>

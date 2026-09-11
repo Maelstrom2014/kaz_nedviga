@@ -129,6 +129,13 @@ Or via a batch file (Windows):
 run.bat
 ```
 
+Or via a shell script (Linux / macOS):
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
 Open http://localhost:5000
 
 ## Tests
@@ -221,6 +228,7 @@ kaz_nedviga/
 │
 ├── requirements.txt
 ├── run.bat                        Run on Windows
+├── run.sh                         Run on Linux / macOS
 └── README.md
 ```
 
@@ -448,6 +456,13 @@ python app.py
 run.bat
 ```
 
+Или через shell-скрипт (Linux / macOS):
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
 Открыть http://localhost:5000
 
 ## Тесты
@@ -540,6 +555,7 @@ kaz_nedviga/
 │
 ├── requirements.txt
 ├── run.bat                        # Запуск на Windows
+├── run.sh                         # Запуск на Linux / macOS
 └── README.md
 ```
 

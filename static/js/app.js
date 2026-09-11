@@ -17,7 +17,7 @@
     let displayedResults = [];  // filtered subset shown in the grid + map
     let filterStats = { total: 0, hidden: 0 };  // how many listings were filtered out
 
-    const UNFURNISHED_RE = /без\s+мебели|жиһазсыз|без\s+кухон/i;
+    const UNFURNISHED_RE = /без\s+мебели|мебели\s+нет|жиһазсыз|без\s+кухон/i;
 
     function fmtDistance(m) {
       if (m == null || !Number.isFinite(m)) return '';
@@ -105,6 +105,9 @@
     }
 
     function drawListingMarkers() {
+      // In favorites-only mode the map shows favorites; a live filter change
+      // (incl. «без мебели») must not silently overwrite that layer.
+      if (favoritesOnlyMode) return;
       if (listingMarkers) { map.removeLayer(listingMarkers); listingMarkers = null; }
       listingMarkerRefs = [];
       markerPositions = displayedResults.map((r, i) => geocodeListing(r, i));
@@ -407,6 +410,38 @@
       document.getElementById('exportButtons').style.display = displayedResults.length ? 'flex' : 'none';
       try { drawListingMarkers(); } catch(mErr) { console.error('drawListingMarkers:', mErr); }
       try { drawDistricts(); } catch(dErr) { console.error('drawDistricts:', dErr); }
+      updateResultStats();
+    }
+
+    // Left-panel stats: shown / hidden by filters + per-parser breakdown.
+    function updateResultStats() {
+      const box = document.getElementById('resultStats');
+      if (!box) return;
+      if (!currentResults.length) {
+        box.textContent = 'Нет данных';
+        return;
+      }
+      const bySrc = {};
+      displayedResults.forEach(r => {
+        const s = r.source || 'неизвестно';
+        bySrc[s] = (bySrc[s] || 0) + 1;
+      });
+      const srcRows = Object.entries(bySrc)
+        .sort((a, b) => b[1] - a[1])
+        .map(([s, n]) =>
+          `<div style="display:flex;justify-content:space-between;gap:8px;">` +
+          `<span>${escapeHtml(s)}</span><b style="color:var(--text);">${n}</b></div>`)
+        .join('');
+      const hiddenRow = filterStats.hidden > 0
+        ? `<div style="display:flex;justify-content:space-between;gap:8px;">` +
+          `<span>Скрыто фильтрами</span>` +
+          `<b style="color:var(--danger);">${filterStats.hidden}</b></div>`
+        : '';
+      box.innerHTML =
+        `<div style="display:flex;justify-content:space-between;gap:8px;color:var(--text);font-weight:600;">` +
+        `<span>Найдено</span><b style="color:var(--accent);">${currentResults.length}</b></div>` +
+        hiddenRow +
+        (srcRows ? `<div style="margin-top:6px;margin-bottom:2px;">По парсерам:</div>${srcRows}` : '');
     }
 
     async function runCrawl() {
@@ -945,6 +980,7 @@ function renderResults(results, total) {
         document.getElementById('settingsTab').classList.add('active');
         markActiveTheme();
         loadPhotoCacheSetting();
+        loadCardLayout();
         loadMlStatus();
       }
     }
@@ -1001,6 +1037,15 @@ function renderResults(results, total) {
         await fetch('/api/settings', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({olx_phone_playwright: v})
+        });
+      } catch (err) {
+      }
+    }
+    async function setBotEnabled(v) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({bot_enabled: v})
         });
       } catch (err) {
       }
@@ -1062,6 +1107,108 @@ function renderResults(results, total) {
       }
       // Server re-applies the filter to the cached results
       loadCachedResults();
+    }
+
+    // === Result cards layout (columns, width scale) ===
+    function applyCardLayout() {
+      const grid = document.getElementById('resultsGrid');
+      if (!grid) return;
+      const cols = window._cardLayout?.results_columns || 2;
+      const scale = window._cardLayout?.card_width_scale || 100;
+      grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+      // Ширина карточек = перераспределение места: колонка результатов
+      // растёт/сжимается (flex-grow = scale/100), карта уходит вправо,
+      // панель фильтров — влево. Никакого горизонтального скролла.
+      const k = scale / 100;
+      const col = document.querySelector('#searchTab.map-right .results-col');
+      if (col) col.style.flex = `${k} 1 0`;
+      if (window.innerWidth > 900) {
+        const layout = document.querySelector('.grid-layout');
+        if (layout) {
+          // Фильтры подстраиваются влево: 340px при 100%, уже — при >100%.
+          const w = Math.round(340 / k);
+          layout.style.gridTemplateColumns =
+            `${Math.max(260, Math.min(340, w))}px 1fr`;
+        }
+      }
+    }
+    async function loadCardLayout() {
+      try {
+        const resp = await fetch('/api/settings');
+        const s = await resp.json();
+        window._cardLayout = { results_columns: s.results_columns || 2,
+                               card_width_scale: s.card_width_scale || 100 };
+        const ci = document.getElementById('resultsColumnsInput');
+        const wi = document.getElementById('cardWidthScaleInput');
+        if (ci) ci.value = window._cardLayout.results_columns;
+        if (wi) wi.value = window._cardLayout.card_width_scale;
+        applyCardLayout();
+      } catch (err) {
+        console.error('loadCardLayout:', err);
+      }
+    }
+    async function _saveCardLayout(patch) {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(patch)
+        });
+      } catch (err) {
+        console.error('_saveCardLayout:', err);
+      }
+    }
+    async function setResultsColumns(v) {
+      const n = parseInt(v, 10);
+      if (isNaN(n) || n < 1 || n > 4) {
+        alert('Введите число от 1 до 4');
+        loadCardLayout();
+        return;
+      }
+      window._cardLayout = { ...(window._cardLayout || {}), results_columns: n };
+      applyCardLayout();
+      await _saveCardLayout({ results_columns: n });
+    }
+    async function setCardWidthScale(v) {
+      const n = parseInt(v, 10);
+      if (isNaN(n) || n < 50 || n > 150) {
+        alert('Введите число от 50 до 150');
+        loadCardLayout();
+        return;
+      }
+      window._cardLayout = { ...(window._cardLayout || {}), card_width_scale: n };
+      applyCardLayout();
+      await _saveCardLayout({ card_width_scale: n });
+    }
+    async function resetCardLayout() {
+      window._cardLayout = { results_columns: 2, card_width_scale: 100 };
+      const ci = document.getElementById('resultsColumnsInput');
+      const wi = document.getElementById('cardWidthScaleInput');
+      if (ci) ci.value = 2;
+      if (wi) wi.value = 100;
+      applyCardLayout();
+      await _saveCardLayout({ results_columns: 2, card_width_scale: 100 });
+    }
+
+    // === Crawl sources (auto-saved selection) ===
+    function applyCrawlSources(names) {
+      const boxes = document.querySelectorAll('#sourcesGroup input[name="sources"]');
+      // Пустой список = все источники (дефолт).
+      boxes.forEach(cb => {
+        cb.checked = !names || !names.length || names.includes(cb.value);
+      });
+    }
+
+    async function saveCrawlSources() {
+      const checked = [...document.querySelectorAll(
+        '#sourcesGroup input[name="sources"]:checked')].map(cb => cb.value);
+      try {
+        await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({crawl_sources: checked})
+        });
+      } catch (err) {
+        console.error('saveCrawlSources:', err);
+      }
     }
 
     // === Photo cache settings ===
@@ -1565,10 +1712,18 @@ function renderResults(results, total) {
       if (cbP1) cbP1.checked = !!s.olx_phone_page_only;
       const cbP2 = document.getElementById('olxPhonePlaywright');
       if (cbP2) cbP2.checked = !!s.olx_phone_playwright;
+      const cbBot = document.getElementById('botEnabled');
+      if (cbBot) cbBot.checked = !!s.bot_enabled;
+      applyCrawlSources(s.crawl_sources || []);
       parserMaxPages = s.parser_max_pages || {};
       renderParserMaxPages();
     }).catch(() => {});
+    const sourcesGroup = document.getElementById('sourcesGroup');
+    if (sourcesGroup) {
+      sourcesGroup.addEventListener('change', saveCrawlSources);
+    }
     loadSearchDefaults();
+    loadCardLayout();
     loadRates();
     // Auto-refresh rates every 10 minutes
     if (ratesTimer) clearInterval(ratesTimer);

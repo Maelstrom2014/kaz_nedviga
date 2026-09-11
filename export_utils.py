@@ -70,8 +70,43 @@ def _first_existing(candidates: list[str]) -> str | None:
     return None
 
 
-_font_path = _first_existing(_FONT_CANDIDATES)
-_font_bold = _first_existing(_FONT_BOLD_CANDIDATES) or _font_path
+# Generic fallback: search common font dirs by filename when none of the
+# well-known distro paths above exist (Alpine, NIXPkgs, $HOME installs, ...).
+_FONT_SEARCH_DIRS = [
+    "/usr/share/fonts",
+    "/usr/local/share/fonts",
+    str(Path.home() / ".fonts"),
+    str(Path.home() / ".local" / "share" / "fonts"),
+]
+_FONT_NAME_FALLBACKS = [
+    ("DejaVuSans.ttf", "DejaVuSans-Bold.ttf"),
+    ("LiberationSans-Regular.ttf", "LiberationSans-Bold.ttf"),
+    ("FreeSans.ttf", "FreeSansBold.ttf"),
+    ("NotoSans-Regular.ttf", "NotoSans-Bold.ttf"),
+]
+
+
+def _glob_font(name: str) -> str | None:
+    for root in _FONT_SEARCH_DIRS:
+        try:
+            for hit in Path(root).rglob(name):
+                return str(hit)
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_font(candidates: list[str], bold_name: str | None = None) -> str | None:
+    path = _first_existing(candidates)
+    if path:
+        return path
+    if bold_name:
+        return _glob_font(bold_name)
+    return None
+
+
+_font_path = _resolve_font(_FONT_CANDIDATES, "DejaVuSans.ttf")
+_font_bold = _resolve_font(_FONT_BOLD_CANDIDATES, "DejaVuSans-Bold.ttf") or _font_path
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",

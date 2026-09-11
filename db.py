@@ -90,6 +90,34 @@ CREATE INDEX IF NOT EXISTS idx_organizations_phone
     ON organizations(phones);
 CREATE INDEX IF NOT EXISTS idx_buildings_complex
     ON buildings(residential_complex);
+
+CREATE TABLE IF NOT EXISTS bot_users (
+    telegram_id   INTEGER PRIMARY KEY,
+    username      TEXT    NOT NULL DEFAULT '',
+    first_name    TEXT    NOT NULL DEFAULT '',
+    role          TEXT    NOT NULL DEFAULT 'user',
+    searches      INTEGER NOT NULL DEFAULT 0,
+    searches_today INTEGER NOT NULL DEFAULT 0,
+    last_search_day TEXT  NOT NULL DEFAULT '',
+    joined_at     TEXT    NOT NULL,
+    last_seen     TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bot_subscription_requests (
+    telegram_id INTEGER PRIMARY KEY,
+    username    TEXT    NOT NULL DEFAULT '',
+    status      TEXT    NOT NULL DEFAULT 'pending',
+    requested_at TEXT   NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bot_support_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL,
+    username    TEXT    NOT NULL DEFAULT '',
+    text        TEXT    NOT NULL DEFAULT '',
+    answered    INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL
+);
 """
 
 # Columns added after the initial schema. Applied on connect so older
@@ -112,15 +140,17 @@ _MIGRATIONS = [
     ("favorites", "quality_score",       "INTEGER"),
     ("favorites", "duplicate_group_id",  "TEXT NOT NULL DEFAULT ''"),
     ("favorites", "check_status",        "TEXT NOT NULL DEFAULT ''"),
+    # Telegram bot: daily search quota (non-admin users).
+    ("bot_users", "searches_today",   "INTEGER NOT NULL DEFAULT 0"),
+    ("bot_users", "last_search_day",  "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
 def _apply_migrations(conn):
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(favorites)")}
     for table, col, decl in _MIGRATIONS:
-        if col not in cols:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if cols and col not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
-            cols.add(col)
 
 
 def listing_key(url: str, source: str, title: str = "") -> str:
@@ -130,6 +160,11 @@ def listing_key(url: str, source: str, title: str = "") -> str:
 
 def _now() -> str:
     return datetime.now().isoformat(sep=" ", timespec="seconds")
+
+
+def _today() -> str:
+    """Local calendar day (ISO) — the seam for daily-quota tests."""
+    return datetime.now().date().isoformat()
 
 
 def get_conn() -> sqlite3.Connection:
@@ -580,8 +615,29 @@ def close_db():
         _conn = None
 
 
+# Service data that must survive a DB reset: wiping the whole file would
+# turn every /start into "first user = admin" — and a random user could
+# claim the admin role by being the first to /start after a reset.
+_SERVICE_TABLES = ("bot_users", "bot_subscription_requests", "bot_support_messages")
+
+
 def reset_db():
     close_db()
+    # Snapshot bot/service rows so they can be restored after the wipe.
+    snapshot: dict[str, tuple[list[str], list[tuple]]] = {}
+    if DB_PATH.exists():
+        try:
+            raw = sqlite3.connect(str(DB_PATH))
+            try:
+                for t in _SERVICE_TABLES:
+                    cols = [r[1] for r in raw.execute(f"PRAGMA table_info({t})")]
+                    if cols:
+                        snapshot[t] = (cols, raw.execute(
+                            f"SELECT * FROM {t}").fetchall())
+            finally:
+                raw.close()
+        except Exception:
+            snapshot = {}  # unreadable/corrupt file: nothing to preserve
     # WAL mode keeps side-car files; deleting only the main db would leave
     # stale -wal/-shm behind and corrupt the "fresh" database on next open.
     for suffix in ("", "-wal", "-shm"):
@@ -589,3 +645,171 @@ def reset_db():
         if p.exists():
             p.unlink()
     get_conn()
+    # Restore service rows (searches/favorites stay wiped).
+    for t, (cols, rows) in snapshot.items():
+        if not rows:
+            continue
+        try:
+            with db_cursor() as cur:
+                cur.executemany(
+                    f"INSERT OR REPLACE INTO {t} ({', '.join(cols)}) "
+                    f"VALUES ({', '.join('?' for _ in cols)})", rows)
+        except Exception:
+            pass  # schema drift / unreadable snapshot: fail open, table empty
+
+
+# ============================================================
+# Telegram bot users (multi-user access; first user = admin)
+# ============================================================
+
+def register_bot_user(telegram_id: int, username: str = "",
+                      first_name: str = "") -> dict:
+    """Register a bot user on /start; the FIRST ever user becomes admin.
+
+    Returns the user row (with 'role'). Existing users just get their
+    last_seen refreshed (and username/first_name updated if changed).
+    """
+    now = _now()
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM bot_users WHERE telegram_id = ?", (telegram_id,))
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                "UPDATE bot_users SET username = ?, first_name = ?, last_seen = ? "
+                "WHERE telegram_id = ?",
+                (username or row["username"], first_name or row["first_name"],
+                 now, telegram_id))
+            cur.execute("SELECT * FROM bot_users WHERE telegram_id = ?", (telegram_id,))
+            return dict(cur.fetchone())
+        # First-ever user is promoted to admin (empty table = first).
+        cur.execute("SELECT COUNT(*) AS n FROM bot_users")
+        is_first = cur.fetchone()["n"] == 0
+        role = "admin" if is_first else "user"
+        cur.execute(
+            "INSERT INTO bot_users "
+            "(telegram_id, username, first_name, role, searches, joined_at, last_seen) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?)",
+            (telegram_id, username, first_name, role, now, now))
+    return get_bot_user(telegram_id)
+
+
+def get_bot_user(telegram_id: int) -> dict | None:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM bot_users WHERE telegram_id = ?", (telegram_id,))
+        r = cur.fetchone()
+        return dict(r) if r else None
+
+
+def is_bot_admin(telegram_id: int) -> bool:
+    u = get_bot_user(telegram_id)
+    return bool(u and u["role"] == "admin")
+
+
+def list_bot_users() -> list[dict]:
+    with db_cursor() as cur:
+        cur.execute("SELECT * FROM bot_users ORDER BY joined_at")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def set_bot_user_role(telegram_id: int, role: str) -> bool:
+    if role not in ("admin", "user"):
+        raise ValueError("role must be 'admin' or 'user'")
+    with db_cursor() as cur:
+        cur.execute("UPDATE bot_users SET role = ? WHERE telegram_id = ?",
+                    (role, telegram_id))
+        return cur.rowcount > 0
+
+
+def bump_bot_user_searches(telegram_id: int) -> None:
+    """Count one search: lifetime total + today's counter (day-rollover aware).
+
+    ``searches_today`` resets automatically when ``last_search_day`` differs
+    from today — no cron job needed.
+    """
+    today = _today()
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT last_search_day FROM bot_users WHERE telegram_id = ?",
+            (telegram_id,))
+        row = cur.fetchone()
+        if row is None:
+            return
+        if row["last_search_day"] == today:
+            cur.execute(
+                "UPDATE bot_users SET searches_today = searches_today + 1, "
+                "searches = searches + 1, last_seen = ? WHERE telegram_id = ?",
+                (_now(), telegram_id))
+        else:
+            cur.execute(
+                "UPDATE bot_users SET searches_today = 1, last_search_day = ?, "
+                "searches = searches + 1, last_seen = ? WHERE telegram_id = ?",
+                (today, _now(), telegram_id))
+
+
+def count_bot_searches_today(telegram_id: int) -> int:
+    """Searches this user made today (0 before the first one today)."""
+    u = get_bot_user(telegram_id)
+    if not u or u.get("last_search_day") != _today():
+        return 0
+    return int(u.get("searches_today") or 0)
+
+
+# --- Support inbox: users write, admins answer ---------------------------
+
+def add_support_message(telegram_id: int, username: str, text: str) -> int:
+    """Store a support request. Returns its id."""
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO bot_support_messages (telegram_id, username, text, created_at) "
+            "VALUES (?, ?, ?, ?)", (telegram_id, username, text, _now()))
+        return cur.lastrowid
+
+
+def list_support_messages(limit: int = 50, only_open: bool = False) -> list[dict]:
+    q = ("SELECT * FROM bot_support_messages"
+         + (" WHERE answered = 0" if only_open else "")
+         + " ORDER BY id DESC LIMIT ?")
+    with db_cursor() as cur:
+        cur.execute(q, (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def mark_support_answered(msg_id: int) -> bool:
+    with db_cursor() as cur:
+        cur.execute("UPDATE bot_support_messages SET answered = 1 WHERE id = ?",
+                    (msg_id,))
+        return cur.rowcount > 0
+
+
+# --- Subscription stub: collect interested users until billing exists ---
+
+def add_subscription_request(telegram_id: int, username: str = "") -> int:
+    """Record a paid-subscription interest. Returns the queue position (FIFO).
+
+    Position is fixed by the FIRST request time: re-requesting updates the
+    username but keeps the original place in line (rows with the same
+    timestamp — same second — are ordered by telegram id, deterministic).
+    """
+    now = _now()
+    with db_cursor() as cur:
+        cur.execute(
+            "INSERT INTO bot_subscription_requests (telegram_id, username, requested_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET "
+            "username = excluded.username",
+            (telegram_id, username, now))
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM bot_subscription_requests me "
+            "JOIN bot_subscription_requests other "
+            "ON other.telegram_id != me.telegram_id "
+            "AND (other.requested_at < me.requested_at "
+            "     OR (other.requested_at = me.requested_at "
+            "         AND other.telegram_id < me.telegram_id)) "
+            "WHERE me.telegram_id = ?", (telegram_id,))
+        return cur.fetchone()["n"] + 1
+
+
+def list_subscription_requests() -> list[dict]:
+    with db_cursor() as cur:
+        cur.execute(
+            "SELECT * FROM bot_subscription_requests ORDER BY requested_at")
+        return [dict(r) for r in cur.fetchall()]
